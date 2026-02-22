@@ -5,7 +5,7 @@ from extractor_movimientos import parsear_archivo, crear_excel
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="ETL Méndez · Extractor de Movimientos",
+    page_title="Comprobantes a Excel",
     page_icon="⬡",
     layout="centered"
 )
