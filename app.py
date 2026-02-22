@@ -6,7 +6,7 @@ from extractor_movimientos import parsear_archivo, crear_excel
 # --- Page Config ---
 st.set_page_config(
     page_title="Comprobantes a Excel",
-    page_icon="⬡",
+    page_icon="📗",
     layout="centered"
 )
 
