@@ -265,6 +265,69 @@ h1, h2, h3, h4, p, span, div, label {
 ::-webkit-scrollbar-track { background: var(--bg); }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 99px; }
 
+/* Navbar / Header bar */
+header[data-testid="stHeader"],
+.stAppHeader,
+header.stAppHeader {
+    background: #1a1d24 !important;
+    background-color: #1a1d24 !important;
+    border-bottom: 1px solid var(--border) !important;
+}
+header[data-testid="stHeader"] *,
+.stAppHeader * {
+    color: var(--accent) !important;
+}
+
+/* Selectbox */
+[data-testid="stSelectbox"] > div > div,
+.stSelectbox > div > div {
+    background: #1a1d24 !important;
+    background-color: #1a1d24 !important;
+    border: 1.5px solid var(--border) !important;
+    border-radius: var(--radius) !important;
+    color: var(--accent) !important;
+}
+[data-testid="stSelectbox"] > div > div:hover,
+.stSelectbox > div > div:hover {
+    border-color: var(--accent) !important;
+}
+[data-testid="stSelectbox"] span,
+[data-testid="stSelectbox"] div[data-baseweb="select"] span,
+.stSelectbox span {
+    color: var(--accent) !important;
+}
+[data-testid="stSelectbox"] svg {
+    fill: var(--accent) !important;
+}
+[data-testid="stSelectbox"] label {
+    color: var(--muted) !important;
+}
+/* Selectbox dropdown menu */
+[data-baseweb="popover"],
+[data-baseweb="menu"],
+ul[role="listbox"] {
+    background: #1a1d24 !important;
+    background-color: #1a1d24 !important;
+    border: 1px solid var(--border) !important;
+}
+ul[role="listbox"] li,
+[data-baseweb="menu"] li {
+    background: #1a1d24 !important;
+    color: var(--text) !important;
+}
+ul[role="listbox"] li:hover,
+[data-baseweb="menu"] li:hover,
+ul[role="listbox"] li[aria-selected="true"],
+[data-baseweb="menu"] li[aria-selected="true"] {
+    background: var(--surface) !important;
+    color: var(--accent) !important;
+}
+
+/* Radio buttons */
+[data-testid="stRadio"] > div > div > label > div {
+    background: #1a1d24 !important;
+}
+
 /* Footer */
 .etl-footer {
     text-align: center;
@@ -282,14 +345,14 @@ h1, h2, h3, h4, p, span, div, label {
 st.markdown("""
 <div>
     <h1 class="etl-title">Movimientos a<span> Excel</span></h1>
-    <p class="etl-subtitle">TXT / PRN  →  XLSX</p>
+    <p class="etl-subtitle">TXT  →  XLSX</p>
 </div>
 <hr class="divider">
 """, unsafe_allow_html=True)
 
 
 # ─── Selector de herramienta ────────────────────────────────────────────────────────────
-TOOL_MOVIMIENTOS = "Extracción de Movimientos (.txt / .prn)"
+TOOL_MOVIMIENTOS = "Extracción de Movimientos (.txt)"
 TOOL_PORTAL_IVA = "Movimientos Portal IVA limpio (.zip)"
 
 herramienta = st.selectbox(
@@ -314,7 +377,7 @@ if herramienta == TOOL_MOVIMIENTOS:
         OPT_SOLO = "Solo Movimientos"
         OPT_AUXILIAR = "Exportar con columna Auxiliar"
         OPT_RESUMENES = "Incluir hojas de resumen"
-        OPT_ARCA = "Cruce de comprobantes con ARCA"
+        OPT_ARCA = "Cruce de comprobantes con ARCA (En desarrollo)"
 
         modo_export = st.radio(
             "Seleccioná el modo de exportación:",

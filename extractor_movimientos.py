@@ -262,7 +262,7 @@ def parsear_archivo(path: Path = None, content: str = None) -> tuple[list[dict],
             # tratar como sub-concepto en vez de nueva transacción.
             # Agregamos CUIT y Proveedor para evitar agrupar movimientos distintos con mismo número (ej: SIRCREB)
             if (current and
-                current['Dia'] == dia and
+                current['Fecha'] == dia and
                 current['Tipo'] == tipo and
                 current['Numero'] == numero and
                 current['CUIT'] == cuit and
@@ -288,7 +288,7 @@ def parsear_archivo(path: Path = None, content: str = None) -> tuple[list[dict],
                 transacciones.append(current)
             
             current = {
-                'Dia': dia,
+                'Fecha': dia,
                 'Tipo': tipo,
                 'Numero': numero,
                 'Proveedor': proveedor,
@@ -404,7 +404,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
         return
 
     present_iva_cols = set()
-    found_others = set()
+    found_others = []  # Lista ordenada (preserva orden de aparición en TXT)
     
     for t in transacciones:
         # Tasa principal
@@ -414,7 +414,9 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             present_iva_cols.add(neto_col)
             if iva_col: present_iva_cols.add(iva_col)
         elif tasa and tasa.strip():
-            found_others.add(tasa.strip())
+            t_clean = tasa.strip()
+            if t_clean not in found_others:
+                found_others.append(t_clean)
             
         # Sub-conceptos
         for s in t['SubConceptos']:
@@ -424,7 +426,9 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                 present_iva_cols.add(neto_col)
                 if iva_col: present_iva_cols.add(iva_col)
             elif conc and conc.strip():
-                found_others.add(conc.strip())
+                c_clean = conc.strip()
+                if c_clean not in found_others:
+                    found_others.append(c_clean)
 
     IVA_COL_ORDER = [c for c in DESIRED_IVA_ORDER if c in present_iva_cols]
     if not IVA_COL_ORDER:
@@ -433,7 +437,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
              return # No hay nada que escribir
         IVA_COL_ORDER = sorted(list(present_iva_cols)) # fallback
     
-    other_cols = sorted(list(found_others))
+    other_cols = list(found_others)  # Preservar orden de aparición del TXT
 
     rows = []
     for t in transacciones:
@@ -451,7 +455,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
         cuit_val = int(cuit_raw) if cuit_raw and cuit_raw.isdigit() else cuit_raw
 
         row = {
-            'Dia': t['Dia'],
+            'Fecha': t['Fecha'],
             'Tipo': t['Tipo'],
             'PV': int(pv),
             'Nro.': int(nro) if nro.isdigit() else nro,
@@ -651,7 +655,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                 )
 
         _autofit(ws, total_cols)
-        ws.column_dimensions['A'].width = 5 # Ancho fijo para columna Dia
+        ws.column_dimensions['A'].width = 8 # Ancho fijo para columna Fecha
 
         # ── Hojas de Resumen (Solo si se solicita) ────────────
         if con_resumenes:
@@ -660,7 +664,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             resumen = df.copy()
         
             # Separar conceptos en Deducciones (PERC/RET) y Otros (IMP.CIG, etc.)
-            deduccion_cols = [c for c in other_cols if "PERC" in c.upper() or "RET" in c.upper()]
+            deduccion_cols = [c for c in other_cols if "PERC" in c.upper() or "RET" in c.upper() or "SIRCREB" in c.upper()]
             individual_other_cols = [c for c in other_cols if c not in deduccion_cols]
         
             res_header_row = 6
@@ -692,7 +696,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             for col in other_cols:
                 c_idx = col_list.index(col) + 1
                 col_upper = col.upper()
-                if "PERC" in col_upper or "RET" in col_upper:
+                if "PERC" in col_upper or "RET" in col_upper or "SIRCREB" in col_upper:
                     res_imp_data.append({
                         'Tasa': col, 'Neto_Col_M': None, 'IVA_Col_M': None, 'Ded_Col_M': get_column_letter(c_idx)
                     })
@@ -701,6 +705,118 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                     res_imp_data.append({
                         'Tasa': col, 'Neto_Col_M': get_column_letter(c_idx), 'IVA_Col_M': None, 'Ded_Col_M': None
                     })
+
+            # ── Orden de conceptos: impuestos primero (por código), luego deducciones ──
+            TASA_ORDER_MAP = {
+                'Exento': 1,
+                'Tasa 21%': 2, 'T.21%': 2,
+                'Tasa 27%': 3, 'T.27%': 3,
+                'T.10.5%': 4, 'T.10,5%': 4, 'Tasa 10.5%': 4, 'Tasa 10,5%': 4,
+                'Tasa 21+5': 5,
+                'Tasa 27+5': 6,
+                'Imp.Inter': 7, 'Imp.Inter.': 7,
+                'Cons.Fin.': 8,
+                'R.Monot21': 9,
+                'R.Mont.10': 10,
+                'C.F.21%': 11,
+                'C.F.10.5%': 12, 'C.F.10,5%': 12,
+                'CPTE.ANUL': 13,
+                'IMP.COMB.': 14,
+                'IMP.CIG.': 15,
+                'ABASTO.': 16,
+                'L.25413': 17,
+                'IMP.SELLO': 18,
+                'D.976/01': 19,
+                'BONIFIC.': 20,
+                'itida en': 21,
+                'TJT Prep.': 22,
+                'L25413(2)': 23,
+                'AJUST RED': 24,
+                'IVA PEAJE': 25,
+                'TRANPORT': 26,
+                'AJUST IVA': 27,
+                'DESC OTOR': 28,
+                'DESC.S/IV': 29,
+                'DESC.10.5': 30,
+                'Valor Cri': 31,
+                'Incre Iva': 32,
+                'S41': 33,
+                'DESC CF': 34,
+                'DESC.MONO': 35,
+                'Tasa 16,5': 36,
+                'Tasa 22%': 37,
+                'T.IMP 21%': 38,
+                'T.IMP 10%': 39,
+                'TASA 16,6': 40,
+                'Tasa 2.5%': 41, 'Tasa 2,5%': 41, 'T.2.5%': 41, 'T.2,5%': 41,
+                'Tasa 0%': 42,
+                'TASA 9%': 43,
+                'TASA 5%': 44, 'Tasa 5%': 44, 'T.5%': 44,
+                'L.27264': 45,
+                'IMP.FONDE': 46,
+                'R.Mont.27': 47,
+                'TurIVA': 48,
+                'REC. GAS.': 49,
+                'CRI 10,5': 50,
+                'CCF 10,5': 51,
+                'CRM 10,50': 52,
+                'AJ.IMPORT': 53,
+                'CM 21%': 54,
+                'CM CF 21%': 55,
+                'IMP. PAIS': 56,
+                'GST IIBB': 57,
+                'T21% 4240': 58,
+            }
+
+            # ── Orden de deducciones (percepciones/retenciones) ──
+            DEDUCCION_ORDER_MAP = {
+                'PERC.I.V.A.': 1, 'PERC.IVA': 1, 'PERC IVA': 1,
+                'PERC.GCIAS.': 2, 'PERC.GCIAS': 2, 'PERC GCIAS': 2,
+                'PERC.IB.CAP.FED.': 3, 'PERC.IB.CAP.FED': 3,
+                'PERC.IB.BS.AS.': 4, 'PERC.IB.BS.AS': 4,
+                'PERC.IB.CORDOBA': 5, 'PERC.IB.CÓRDOBA': 5,
+                'PERC.IB.MENDOZA': 6,
+                'PERC.IB.MISIONES': 7,
+                'RET.GCIAS': 8, 'RET GCIAS': 8,
+                'RET.IB.BS.AS.': 9, 'RET.IB.BS.AS': 9,
+                'RET.IB. CAP.FED': 10, 'RET.IB.CAP.FED': 10, 'RET.IB.CAP.FED.': 10,
+                'RET.IB.CORDOBA': 11, 'RET.IB.CÓRDOBA': 11,
+                'RET.IB.MENDOZA': 12,
+                'RET.IB.MISIONES': 13,
+                'RET.SIRCREB CORDOBA': 14, 'RET.SIRCREB CÓRDOBA': 14,
+                'RET.SIRCREB MENDOZA': 15,
+                'RET.SIRCREB JUJUY': 16,
+                'RET. SIRCREB C.A.B.A': 17, 'RET.SIRCREB C.A.B.A': 17, 'RET.SIRCREB CABA': 17,
+                'RET.SIRCREB R.NEGRO': 18, 'RET.SIRCREB RIO NEGRO': 18,
+                'PERC.ADUANERA C.FED.': 19, 'PERC.ADUANERA C.FED': 19,
+                'PERC.ADUANERA BSAS': 20, 'PERC.ADUANERA BS.AS.': 20,
+                'PERCEP.ADUAN.CORDOBA': 21, 'PERCEP.ADUAN.CÓRDOBA': 21,
+                'PERCEP.ADUAN.MENDOZA': 22,
+                'SIRCREB CORRIENTES': 23,
+                'PERC.ADUANA CORRIENT': 24, 'PERC.ADUANA CORRIENTES': 24,
+                'PERC.ADUAN. RIO NEG.': 25, 'PERC.ADUAN. RIO NEG': 25, 'PERC.ADUAN.RIO NEG': 25,
+                'PERC ADUANA JUJUY': 26, 'PERC.ADUANA JUJUY': 26,
+            }
+
+            def _get_deduccion_code(nombre):
+                """Busca el código de deducción, primero exacto, luego por prefijo."""
+                if nombre in DEDUCCION_ORDER_MAP:
+                    return DEDUCCION_ORDER_MAP[nombre]
+                # Buscar por prefijo (para variantes con números entre paréntesis, etc.)
+                nombre_limpio = nombre.split('(')[0].strip()
+                if nombre_limpio in DEDUCCION_ORDER_MAP:
+                    return DEDUCCION_ORDER_MAP[nombre_limpio]
+                return 999
+
+            def _tasa_sort_key(item):
+                es_deduccion = 1 if item.get('Ded_Col_M') else 0
+                if es_deduccion:
+                    codigo = _get_deduccion_code(item['Tasa'])
+                else:
+                    codigo = TASA_ORDER_MAP.get(item['Tasa'], 999)
+                return (es_deduccion, codigo, item['Tasa'])
+
+            res_imp_data.sort(key=_tasa_sort_key)
 
             n_ri_cols = 5
             ws_ri_name = 'Resumen x Impuesto'
@@ -1166,7 +1282,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             # Original data rows in Movimientos start at Row 7
             df_with_idx['_orig_row'] = range(7, len(df) + 7)
         
-            mayor = df_with_idx.sort_values(['CUIT', 'Dia'])
+            mayor = df_with_idx.sort_values(['CUIT', 'Fecha'])
         
             def format_comp(r):
                 pv_s = f"{r['PV']:05d}"
@@ -1176,7 +1292,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             mayor['Comp.'] = mayor.apply(format_comp, axis=1)
             mayor['Saldo Acumulado'] = mayor.groupby('CUIT')['Total'].cumsum()
         
-            cols_mayor = ['CUIT', 'Proveedor', 'Dia', 'Tipo', 'Comp.', 'Concepto', 'Total', 'Saldo Acumulado', '_orig_row']
+            cols_mayor = ['CUIT', 'Proveedor', 'Fecha', 'Tipo', 'Comp.', 'Concepto', 'Total', 'Saldo Acumulado', '_orig_row']
             mayor = mayor[cols_mayor]
         
             n_mayor_cols = len(mayor.columns) - 1
