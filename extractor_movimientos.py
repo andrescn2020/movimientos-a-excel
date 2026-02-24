@@ -353,7 +353,7 @@ def _autofit(ws, n_cols, start_row=6):
         ws.column_dimensions[letter].width = max(max_len + 3, 8)
 
 
-def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumenes=True):
+def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumenes=True, con_auxiliar=False, cruce_arca=False, df_arca=None):
     """Crea un Excel formateado. Cada tasa de IVA tiene sus propias columnas
     Neto/IVA y cada percepcion/retencion tiene su propia columna.
     output_path puede ser una ruta o un BytesIO buffer."""
@@ -446,6 +446,10 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
         letra = resto_num[-1] if resto_num and resto_num[-1].isalpha() else ''
         nro = resto_num[:-1] if letra else resto_num
 
+        # Limpiar CUIT: quitar guiones y convertir a numerico
+        cuit_raw = t['CUIT'].replace('-', '') if t['CUIT'] else ''
+        cuit_val = int(cuit_raw) if cuit_raw and cuit_raw.isdigit() else cuit_raw
+
         row = {
             'Dia': t['Dia'],
             'Tipo': t['Tipo'],
@@ -454,7 +458,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             'Letra': letra,
             'Proveedor': t['Proveedor'],
             'Cond. IVA': t['Cond_IVA'],
-            'CUIT': int(t['CUIT']) if t['CUIT'] and t['CUIT'].isdigit() else t['CUIT'],
+            'CUIT': cuit_val,
             'Concepto': t['Concepto'],
             'Jur.': t['Letra'],
         }
@@ -489,6 +493,10 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             else:
                 monto = s['Neto'] if s['Neto'] != 0.0 else s['Percepcion']
                 row[nombre] += monto
+
+        # Columna Auxiliar: placeholder (formula se agrega después de escribir el Excel)
+        if con_auxiliar:
+            row['Auxiliar'] = ''
 
         row['Total'] = t['Total']
 
@@ -629,592 +637,649 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             cell.number_format = money_fmt
             cell.alignment = center_align
 
+        # ── Formulas Auxiliar (interactivas) ───────────────────
+        if con_auxiliar and 'Auxiliar' in col_list:
+            aux_col_idx = col_list.index('Auxiliar') + 1
+            tipo_letter = get_column_letter(col_list.index('Tipo') + 1)
+            letra_letter = get_column_letter(col_list.index('Letra') + 1)
+            pv_letter = get_column_letter(col_list.index('PV') + 1)
+            nro_letter = get_column_letter(col_list.index('Nro.') + 1)
+            cuit_letter = get_column_letter(col_list.index('CUIT') + 1)
+            for row in range(data_start_row, len(df) + data_start_row):
+                ws.cell(row=row, column=aux_col_idx).value = (
+                    f'={tipo_letter}{row}&" "&{letra_letter}{row}&{pv_letter}{row}&{nro_letter}{row}&{cuit_letter}{row}'
+                )
+
         _autofit(ws, total_cols)
         ws.column_dimensions['A'].width = 5 # Ancho fijo para columna Dia
 
         # ── Hojas de Resumen (Solo si se solicita) ────────────
-        if not con_resumenes:
-            _autofit(ws, total_cols)
-            ws.column_dimensions['A'].width = 5 # Ancho fijo para columna Dia
-            return
+        if con_resumenes:
 
-        # Resto del código de resúmenes...
-        resumen = df.copy()
+            # Resto del código de resúmenes...
+            resumen = df.copy()
         
-        # Separar conceptos en Deducciones (PERC/RET) y Otros (IMP.CIG, etc.)
-        deduccion_cols = [c for c in other_cols if "PERC" in c.upper() or "RET" in c.upper()]
-        individual_other_cols = [c for c in other_cols if c not in deduccion_cols]
+            # Separar conceptos en Deducciones (PERC/RET) y Otros (IMP.CIG, etc.)
+            deduccion_cols = [c for c in other_cols if "PERC" in c.upper() or "RET" in c.upper()]
+            individual_other_cols = [c for c in other_cols if c not in deduccion_cols]
         
-        res_header_row = 6
-        res_data_start = 7
-        n_mov = len(df)
-        mov_cuit_col = get_column_letter(col_list.index('CUIT') + 1)
-        mov_tipo_col = get_column_letter(col_list.index('Tipo') + 1)
-        mov_conc_col = get_column_letter(col_list.index('Concepto') + 1)
-        mov_jur_col = get_column_letter(col_list.index('Jur.') + 1)
+            res_header_row = 6
+            res_data_start = 7
+            n_mov = len(df)
+            mov_cuit_col = get_column_letter(col_list.index('CUIT') + 1)
+            mov_tipo_col = get_column_letter(col_list.index('Tipo') + 1)
+            mov_conc_col = get_column_letter(col_list.index('Concepto') + 1)
+            mov_jur_col = get_column_letter(col_list.index('Jur.') + 1)
 
-        # ── Hoja Resumen por Impuesto (INTERACTIVA) ──────────
-        res_imp_data = []
-        seen_cols = set()
+            # ── Hoja Resumen por Impuesto (INTERACTIVA) ──────────
+            res_imp_data = []
+            seen_cols = set()
         
-        # Tasas estándar de IVA
-        for tasa_label, (neto_col, iva_col) in IVA_RATES.items():
-            if neto_col in df.columns and (neto_col, iva_col) not in seen_cols:
-                n_idx = col_list.index(neto_col) + 1
-                i_idx = (col_list.index(iva_col) + 1) if (iva_col and iva_col in df.columns) else None
-                res_imp_data.append({
-                    'Tasa': tasa_label,
-                    'Neto_Col_M': get_column_letter(n_idx),
-                    'IVA_Col_M': get_column_letter(i_idx) if i_idx else None,
-                    'Ded_Col_M': None
-                })
-                seen_cols.add((neto_col, iva_col))
+            # Tasas estándar de IVA
+            for tasa_label, (neto_col, iva_col) in IVA_RATES.items():
+                if neto_col in df.columns and (neto_col, iva_col) not in seen_cols:
+                    n_idx = col_list.index(neto_col) + 1
+                    i_idx = (col_list.index(iva_col) + 1) if (iva_col and iva_col in df.columns) else None
+                    res_imp_data.append({
+                        'Tasa': tasa_label,
+                        'Neto_Col_M': get_column_letter(n_idx),
+                        'IVA_Col_M': get_column_letter(i_idx) if i_idx else None,
+                        'Ded_Col_M': None
+                    })
+                    seen_cols.add((neto_col, iva_col))
         
-        # Deducciones y otros
-        for col in other_cols:
-            c_idx = col_list.index(col) + 1
-            col_upper = col.upper()
-            if "PERC" in col_upper or "RET" in col_upper:
-                res_imp_data.append({
-                    'Tasa': col, 'Neto_Col_M': None, 'IVA_Col_M': None, 'Ded_Col_M': get_column_letter(c_idx)
-                })
-            else:
-                # Todo lo demás que no es IVA (como IMP.CIG, impuestos internos, ajustes, etc.) va a Neto
-                res_imp_data.append({
-                    'Tasa': col, 'Neto_Col_M': get_column_letter(c_idx), 'IVA_Col_M': None, 'Ded_Col_M': None
-                })
+            # Deducciones y otros
+            for col in other_cols:
+                c_idx = col_list.index(col) + 1
+                col_upper = col.upper()
+                if "PERC" in col_upper or "RET" in col_upper:
+                    res_imp_data.append({
+                        'Tasa': col, 'Neto_Col_M': None, 'IVA_Col_M': None, 'Ded_Col_M': get_column_letter(c_idx)
+                    })
+                else:
+                    # Todo lo demás que no es IVA (como IMP.CIG, impuestos internos, ajustes, etc.) va a Neto
+                    res_imp_data.append({
+                        'Tasa': col, 'Neto_Col_M': get_column_letter(c_idx), 'IVA_Col_M': None, 'Ded_Col_M': None
+                    })
 
-        n_ri_cols = 5
-        ws_ri_name = 'Resumen x Impuesto'
-        pd.DataFrame([{'Tasa': r['Tasa']} for r in res_imp_data]).to_excel(writer, sheet_name=ws_ri_name, index=False, startrow=5)
-        ws_ri = writer.sheets[ws_ri_name]
+            n_ri_cols = 5
+            ws_ri_name = 'Resumen x Impuesto'
+            pd.DataFrame([{'Tasa': r['Tasa']} for r in res_imp_data]).to_excel(writer, sheet_name=ws_ri_name, index=False, startrow=5)
+            ws_ri = writer.sheets[ws_ri_name]
         
-        ws_ri.merge_cells(f'A1:{get_column_letter(n_ri_cols)}1')
-        ws_ri['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
-        ws_ri['A1'].font = title_font; ws_ri['A1'].fill = title_fill; ws_ri['A1'].alignment = center_align
+            ws_ri.merge_cells(f'A1:{get_column_letter(n_ri_cols)}1')
+            ws_ri['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+            ws_ri['A1'].font = title_font; ws_ri['A1'].fill = title_fill; ws_ri['A1'].alignment = center_align
 
-        ws_ri.merge_cells(f'A2:{get_column_letter(n_ri_cols)}2')
-        ws_ri['A2'] = f"{meta['tipo_reporte'].upper()} - RESUMEN POR IMPUESTO"
-        ws_ri['A2'].font = report_type_font; ws_ri['A2'].alignment = center_align
+            ws_ri.merge_cells(f'A2:{get_column_letter(n_ri_cols)}2')
+            ws_ri['A2'] = f"{meta['tipo_reporte'].upper()} - RESUMEN POR IMPUESTO"
+            ws_ri['A2'].font = report_type_font; ws_ri['A2'].alignment = center_align
 
-        ws_ri.merge_cells(f'A3:{get_column_letter(n_ri_cols)}3')
-        ws_ri['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
-        ws_ri['A3'].font = Font(bold=True, size=11, color='2F5496'); ws_ri['A3'].alignment = center_align
+            ws_ri.merge_cells(f'A3:{get_column_letter(n_ri_cols)}3')
+            ws_ri['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+            ws_ri['A3'].font = Font(bold=True, size=11, color='2F5496'); ws_ri['A3'].alignment = center_align
         
-        ri_headers = ['Tasa', 'Neto', 'IVA', 'Deducciones', 'Total']
-        for col_idx, h in enumerate(ri_headers):
-            cell = ws_ri.cell(row=res_header_row, column=col_idx+1) # Reusing res_header_row
-            cell.value = h
-            cell.font = header_font; cell.fill = header_fill; cell.alignment = header_align; cell.border = thin_border
+            ri_headers = ['Tasa', 'Neto', 'IVA', 'Deducciones', 'Total']
+            for col_idx, h in enumerate(ri_headers):
+                cell = ws_ri.cell(row=res_header_row, column=col_idx+1) # Reusing res_header_row
+                cell.value = h
+                cell.font = header_font; cell.fill = header_fill; cell.alignment = header_align; cell.border = thin_border
 
-        for idx, r_data in enumerate(res_imp_data):
-            curr_row = res_data_start + idx # Reusing res_data_start
-            ws_ri.cell(row=curr_row, column=1).value = r_data['Tasa']
-            ws_ri.cell(row=curr_row, column=1).alignment = center_align
+            for idx, r_data in enumerate(res_imp_data):
+                curr_row = res_data_start + idx # Reusing res_data_start
+                ws_ri.cell(row=curr_row, column=1).value = r_data['Tasa']
+                ws_ri.cell(row=curr_row, column=1).alignment = center_align
             
-            # Neto
-            if r_data['Neto_Col_M']: ws_ri.cell(row=curr_row, column=2).value = f"=Movimientos!{r_data['Neto_Col_M']}{total_row_mov}"
-            else: ws_ri.cell(row=curr_row, column=2).value = 0.0
+                # Neto
+                if r_data['Neto_Col_M']: ws_ri.cell(row=curr_row, column=2).value = f"=Movimientos!{r_data['Neto_Col_M']}{total_row_mov}"
+                else: ws_ri.cell(row=curr_row, column=2).value = 0.0
             
-            # IVA
-            if r_data['IVA_Col_M']: ws_ri.cell(row=curr_row, column=3).value = f"=Movimientos!{r_data['IVA_Col_M']}{total_row_mov}"
-            else: ws_ri.cell(row=curr_row, column=3).value = 0.0
+                # IVA
+                if r_data['IVA_Col_M']: ws_ri.cell(row=curr_row, column=3).value = f"=Movimientos!{r_data['IVA_Col_M']}{total_row_mov}"
+                else: ws_ri.cell(row=curr_row, column=3).value = 0.0
 
-            # Deducciones
-            if r_data['Ded_Col_M']: ws_ri.cell(row=curr_row, column=4).value = f"=Movimientos!{r_data['Ded_Col_M']}{total_row_mov}"
-            else: ws_ri.cell(row=curr_row, column=4).value = 0.0
+                # Deducciones
+                if r_data['Ded_Col_M']: ws_ri.cell(row=curr_row, column=4).value = f"=Movimientos!{r_data['Ded_Col_M']}{total_row_mov}"
+                else: ws_ri.cell(row=curr_row, column=4).value = 0.0
             
-            # Total
-            ws_ri.cell(row=curr_row, column=5).value = f"=B{curr_row}+C{curr_row}+D{curr_row}"
+                # Total
+                ws_ri.cell(row=curr_row, column=5).value = f"=B{curr_row}+C{curr_row}+D{curr_row}"
             
-            for c in range(2, 6):
-                ws_ri.cell(row=curr_row, column=c).number_format = money_fmt
-                ws_ri.cell(row=curr_row, column=c).alignment = center_align
+                for c in range(2, 6):
+                    ws_ri.cell(row=curr_row, column=c).number_format = money_fmt
+                    ws_ri.cell(row=curr_row, column=c).alignment = center_align
 
-        total_row_ri = res_data_start + len(res_imp_data) # Reusing res_data_start
-        ws_ri[f'A{total_row_ri}'] = "TOTAL GENERAL"
-        ws_ri[f'A{total_row_ri}'].font = Font(bold=True); ws_ri[f'A{total_row_ri}'].alignment = Alignment(horizontal='right')
-        for col_idx in range(2, 6):
-             col_l = get_column_letter(col_idx)
-             cell = ws_ri.cell(row=total_row_ri, column=col_idx)
-             cell.value = f'=SUM({col_l}{res_data_start}:{col_l}{total_row_ri-1})' # Reusing res_data_start
-             cell.font = Font(bold=True); cell.border = Border(top=Side(style='double'))
-             cell.number_format = money_fmt; cell.alignment = center_align
+            total_row_ri = res_data_start + len(res_imp_data) # Reusing res_data_start
+            ws_ri[f'A{total_row_ri}'] = "TOTAL GENERAL"
+            ws_ri[f'A{total_row_ri}'].font = Font(bold=True); ws_ri[f'A{total_row_ri}'].alignment = Alignment(horizontal='right')
+            for col_idx in range(2, 6):
+                 col_l = get_column_letter(col_idx)
+                 cell = ws_ri.cell(row=total_row_ri, column=col_idx)
+                 cell.value = f'=SUM({col_l}{res_data_start}:{col_l}{total_row_ri-1})' # Reusing res_data_start
+                 cell.font = Font(bold=True); cell.border = Border(top=Side(style='double'))
+                 cell.number_format = money_fmt; cell.alignment = center_align
 
-        _autofit(ws_ri, n_ri_cols)
+            _autofit(ws_ri, n_ri_cols)
 
 
-        # ── Hoja Resumen por Tipo ─────────────────────────────
-        res_tipo = resumen.groupby('Tipo').agg(
-            **{c: (c, 'sum') for c in IVA_COL_ORDER},
-            **{c: (c, 'sum') for c in individual_other_cols},
-            Deducciones=('Total', 'count'), # placeholder
-            Cantidad=('Total', 'count'),
-        ).reset_index()
-        res_tipo['Total'] = 0.0
-        cols_order_rt = ['Tipo'] + IVA_COL_ORDER + individual_other_cols + ['Deducciones', 'Total', 'Cantidad']
-        cols_order_rt = [c for c in cols_order_rt if c in res_tipo.columns]
-        res_tipo = res_tipo[cols_order_rt]
-        # Sort logic
-        sum_cols = IVA_COL_ORDER + individual_other_cols + deduccion_cols
-        res_tipo['_sort'] = resumen.groupby('Tipo')[sum_cols].sum().sum(axis=1).values
-        res_tipo = res_tipo.sort_values('_sort', ascending=False).drop(columns='_sort')
+            # ── Hoja Resumen por Tipo ─────────────────────────────
+            res_tipo = resumen.groupby('Tipo').agg(
+                **{c: (c, 'sum') for c in IVA_COL_ORDER},
+                **{c: (c, 'sum') for c in individual_other_cols},
+                Deducciones=('Total', 'count'), # placeholder
+                Cantidad=('Total', 'count'),
+            ).reset_index()
+            res_tipo['Total'] = 0.0
+            cols_order_rt = ['Tipo'] + IVA_COL_ORDER + individual_other_cols + ['Deducciones', 'Total', 'Cantidad']
+            cols_order_rt = [c for c in cols_order_rt if c in res_tipo.columns]
+            res_tipo = res_tipo[cols_order_rt]
+            # Sort logic
+            sum_cols = IVA_COL_ORDER + individual_other_cols + deduccion_cols
+            res_tipo['_sort'] = resumen.groupby('Tipo')[sum_cols].sum().sum(axis=1).values
+            res_tipo = res_tipo.sort_values('_sort', ascending=False).drop(columns='_sort')
 
-        n_rt_cols = len(res_tipo.columns)
-        # startrow=5 -> fila 6
-        res_tipo.to_excel(writer, sheet_name='Resumen x Tipo', index=False, startrow=5)
-        ws3 = writer.sheets['Resumen x Tipo']
+            n_rt_cols = len(res_tipo.columns)
+            # startrow=5 -> fila 6
+            res_tipo.to_excel(writer, sheet_name='Resumen x Tipo', index=False, startrow=5)
+            ws3 = writer.sheets['Resumen x Tipo']
         
-        ws3.merge_cells(f'A1:{get_column_letter(n_rt_cols)}1')
-        ws3['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
-        ws3['A1'].font = title_font
-        ws3['A1'].fill = title_fill
-        ws3['A1'].alignment = center_align
+            ws3.merge_cells(f'A1:{get_column_letter(n_rt_cols)}1')
+            ws3['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+            ws3['A1'].font = title_font
+            ws3['A1'].fill = title_fill
+            ws3['A1'].alignment = center_align
 
-        ws3.merge_cells(f'A2:{get_column_letter(n_rt_cols)}2')
-        ws3['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'RESUMEN POR TIPO'
-        ws3['A2'].font = report_type_font
-        ws3['A2'].alignment = center_align
+            ws3.merge_cells(f'A2:{get_column_letter(n_rt_cols)}2')
+            ws3['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'RESUMEN POR TIPO'
+            ws3['A2'].font = report_type_font
+            ws3['A2'].alignment = center_align
 
-        ws3.merge_cells(f'A3:{get_column_letter(n_rt_cols)}3')
-        ws3['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
-        ws3['A3'].font = Font(bold=True, size=11, color='2F5496')
-        ws3['A3'].alignment = center_align
+            ws3.merge_cells(f'A3:{get_column_letter(n_rt_cols)}3')
+            ws3['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+            ws3['A3'].font = Font(bold=True, size=11, color='2F5496')
+            ws3['A3'].alignment = center_align
 
-        ws3.merge_cells(f'A4:{get_column_letter(n_rt_cols)}4')
-        ws3['A4'] = f'Total: {len(res_tipo)} tipos'
-        ws3['A4'].font = Font(italic=True, size=10, color='4472C4')
-        ws3['A4'].alignment = center_align
+            ws3.merge_cells(f'A4:{get_column_letter(n_rt_cols)}4')
+            ws3['A4'] = f'Total: {len(res_tipo)} tipos'
+            ws3['A4'].font = Font(italic=True, size=10, color='4472C4')
+            ws3['A4'].alignment = center_align
 
-        for col_idx in range(1, n_rt_cols + 1):
-            cell = ws3.cell(row=res_header_row, column=col_idx) # reusando res_header_row=6
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = header_align
-            cell.border = thin_border
-
-        rt_col_list = list(res_tipo.columns)
-        first_iva_idx_rt = rt_col_list.index(IVA_COL_ORDER[0]) + 1
-        ded_idx_rt = rt_col_list.index('Deducciones') + 1
-        total_idx_rt = rt_col_list.index('Total') + 1
-        first_iva_letter_rt = get_column_letter(first_iva_idx_rt)
-        ded_letter_rt = get_column_letter(ded_idx_rt)
-
-        for row in range(res_data_start, len(res_tipo) + res_data_start):
             for col_idx in range(1, n_rt_cols + 1):
-                cell = ws3.cell(row=row, column=col_idx)
-                cell.alignment = center_align
-                col_name = rt_col_list[col_idx - 1]
+                cell = ws3.cell(row=res_header_row, column=col_idx) # reusando res_header_row=6
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = thin_border
+
+            rt_col_list = list(res_tipo.columns)
+            first_iva_idx_rt = rt_col_list.index(IVA_COL_ORDER[0]) + 1
+            ded_idx_rt = rt_col_list.index('Deducciones') + 1
+            total_idx_rt = rt_col_list.index('Total') + 1
+            first_iva_letter_rt = get_column_letter(first_iva_idx_rt)
+            ded_letter_rt = get_column_letter(ded_idx_rt)
+
+            for row in range(res_data_start, len(res_tipo) + res_data_start):
+                for col_idx in range(1, n_rt_cols + 1):
+                    cell = ws3.cell(row=row, column=col_idx)
+                    cell.alignment = center_align
+                    col_name = rt_col_list[col_idx - 1]
                 
-                if first_iva_idx_rt <= col_idx <= total_idx_rt:
-                    if col_name in col_list:
-                        v_col = get_column_letter(col_list.index(col_name) + 1)
-                        cell.value = f'=SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_tipo_col}${7}:${mov_tipo_col}${n_mov+7-1}, $A{row})'
-                        cell.number_format = money_fmt
-                    elif col_name == 'Deducciones':
-                        formula_parts = []
-                        for dc in deduccion_cols:
-                            v_col = get_column_letter(col_list.index(dc) + 1)
-                            formula_parts.append(f'SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_tipo_col}${7}:${mov_tipo_col}${n_mov+7-1}, $A{row})')
-                        cell.value = '=' + '+'.join(formula_parts) if formula_parts else 0
-                        cell.number_format = money_fmt
-                    elif col_name == 'Total':
-                        # Sumar desde el primer IVA hasta Deducciones
-                        cell.value = f'=SUM({first_iva_letter_rt}{row}:{ded_letter_rt}{row})'
-                        cell.number_format = money_fmt
-                elif col_name == 'Cantidad':
-                    cell.value = f'=COUNTIFS(Movimientos!${mov_tipo_col}${7}:${mov_tipo_col}${n_mov+7-1}, $A{row})'
+                    if first_iva_idx_rt <= col_idx <= total_idx_rt:
+                        if col_name in col_list:
+                            v_col = get_column_letter(col_list.index(col_name) + 1)
+                            cell.value = f'=SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_tipo_col}${7}:${mov_tipo_col}${n_mov+7-1}, $A{row})'
+                            cell.number_format = money_fmt
+                        elif col_name == 'Deducciones':
+                            formula_parts = []
+                            for dc in deduccion_cols:
+                                v_col = get_column_letter(col_list.index(dc) + 1)
+                                formula_parts.append(f'SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_tipo_col}${7}:${mov_tipo_col}${n_mov+7-1}, $A{row})')
+                            cell.value = '=' + '+'.join(formula_parts) if formula_parts else 0
+                            cell.number_format = money_fmt
+                        elif col_name == 'Total':
+                            # Sumar desde el primer IVA hasta Deducciones
+                            cell.value = f'=SUM({first_iva_letter_rt}{row}:{ded_letter_rt}{row})'
+                            cell.number_format = money_fmt
+                    elif col_name == 'Cantidad':
+                        cell.value = f'=COUNTIFS(Movimientos!${mov_tipo_col}${7}:${mov_tipo_col}${n_mov+7-1}, $A{row})'
 
-        # Fila TOTAL GENERAL
-        total_row_rt = len(res_tipo) + res_data_start
-        ws3.merge_cells(f'A{total_row_rt}:A{total_row_rt}')
-        ws3[f'A{total_row_rt}'] = "TOTAL GENERAL"
-        ws3[f'A{total_row_rt}'].font = Font(bold=True)
-        ws3[f'A{total_row_rt}'].alignment = Alignment(horizontal='right')
+            # Fila TOTAL GENERAL
+            total_row_rt = len(res_tipo) + res_data_start
+            ws3.merge_cells(f'A{total_row_rt}:A{total_row_rt}')
+            ws3[f'A{total_row_rt}'] = "TOTAL GENERAL"
+            ws3[f'A{total_row_rt}'].font = Font(bold=True)
+            ws3[f'A{total_row_rt}'].alignment = Alignment(horizontal='right')
         
-        for col_idx in range(first_iva_idx_rt, n_rt_cols + 1):
-            col_letter = get_column_letter(col_idx)
-            cell = ws3.cell(row=total_row_rt, column=col_idx)
-            cell.value = f'=SUM({col_letter}{res_data_start}:{col_letter}{total_row_rt-1})'
-            cell.font = Font(bold=True)
-            cell.border = Border(top=Side(style='double'))
-            if col_idx < n_rt_cols:
-                cell.number_format = money_fmt
+            for col_idx in range(first_iva_idx_rt, n_rt_cols + 1):
+                col_letter = get_column_letter(col_idx)
+                cell = ws3.cell(row=total_row_rt, column=col_idx)
+                cell.value = f'=SUM({col_letter}{res_data_start}:{col_letter}{total_row_rt-1})'
+                cell.font = Font(bold=True)
+                cell.border = Border(top=Side(style='double'))
+                if col_idx < n_rt_cols:
+                    cell.number_format = money_fmt
 
-        _autofit(ws3, n_rt_cols)
+            _autofit(ws3, n_rt_cols)
 
-        # ── Hoja Resumen por Concepto ─────────────────────────
-        res_conc = resumen.groupby('Concepto').agg(
-            **{c: (c, 'sum') for c in IVA_COL_ORDER},
-            **{c: (c, 'sum') for c in individual_other_cols},
-            Deducciones=('Total', 'count'), # placeholder
-            Cantidad=('Total', 'count'),
-        ).reset_index()
+            # ── Hoja Resumen por Concepto ─────────────────────────
+            res_conc = resumen.groupby('Concepto').agg(
+                **{c: (c, 'sum') for c in IVA_COL_ORDER},
+                **{c: (c, 'sum') for c in individual_other_cols},
+                Deducciones=('Total', 'count'), # placeholder
+                Cantidad=('Total', 'count'),
+            ).reset_index()
         
-        # Ordenar por Concepto numérico
-        res_conc['Concepto_Num'] = pd.to_numeric(res_conc['Concepto'], errors='coerce')
-        res_conc = res_conc.sort_values('Concepto_Num').drop(columns='Concepto_Num')
+            # Ordenar por Concepto numérico
+            res_conc['Concepto_Num'] = pd.to_numeric(res_conc['Concepto'], errors='coerce')
+            res_conc = res_conc.sort_values('Concepto_Num').drop(columns='Concepto_Num')
         
-        res_conc['Descripcion'] = res_conc['Concepto'].apply(
-            lambda x: CONCEPTOS_MAP.get(str(x), "").replace("°", "o.").upper()
-        )
+            res_conc['Descripcion'] = res_conc['Concepto'].apply(
+                lambda x: CONCEPTOS_MAP.get(str(x), "").replace("°", "o.").upper()
+            )
         
-        res_conc['Total'] = 0.0
-        cols_order_rc = ['Concepto', 'Descripcion'] + IVA_COL_ORDER + individual_other_cols + ['Deducciones', 'Total', 'Cantidad']
-        cols_order_rc = [c for c in cols_order_rc if c in res_conc.columns]
-        res_conc = res_conc[cols_order_rc]
+            res_conc['Total'] = 0.0
+            cols_order_rc = ['Concepto', 'Descripcion'] + IVA_COL_ORDER + individual_other_cols + ['Deducciones', 'Total', 'Cantidad']
+            cols_order_rc = [c for c in cols_order_rc if c in res_conc.columns]
+            res_conc = res_conc[cols_order_rc]
 
-        n_rc_cols = len(res_conc.columns)
-        # startrow=5 -> fila 6
-        res_conc.to_excel(writer, sheet_name='Resumen x Concepto', index=False, startrow=5)
-        ws4 = writer.sheets['Resumen x Concepto']
+            n_rc_cols = len(res_conc.columns)
+            # startrow=5 -> fila 6
+            res_conc.to_excel(writer, sheet_name='Resumen x Concepto', index=False, startrow=5)
+            ws4 = writer.sheets['Resumen x Concepto']
         
-        ws4.merge_cells(f'A1:{get_column_letter(n_rc_cols)}1')
-        ws4['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
-        ws4['A1'].font = title_font
-        ws4['A1'].fill = title_fill
-        ws4['A1'].alignment = center_align
+            ws4.merge_cells(f'A1:{get_column_letter(n_rc_cols)}1')
+            ws4['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+            ws4['A1'].font = title_font
+            ws4['A1'].fill = title_fill
+            ws4['A1'].alignment = center_align
 
-        ws4.merge_cells(f'A2:{get_column_letter(n_rc_cols)}2')
-        ws4['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'RESUMEN POR CONCEPTO'
-        ws4['A2'].font = report_type_font
-        ws4['A2'].alignment = center_align
+            ws4.merge_cells(f'A2:{get_column_letter(n_rc_cols)}2')
+            ws4['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'RESUMEN POR CONCEPTO'
+            ws4['A2'].font = report_type_font
+            ws4['A2'].alignment = center_align
 
-        ws4.merge_cells(f'A3:{get_column_letter(n_rc_cols)}3')
-        ws4['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
-        ws4['A3'].font = Font(bold=True, size=11, color='2F5496')
-        ws4['A3'].alignment = center_align
+            ws4.merge_cells(f'A3:{get_column_letter(n_rc_cols)}3')
+            ws4['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+            ws4['A3'].font = Font(bold=True, size=11, color='2F5496')
+            ws4['A3'].alignment = center_align
 
-        ws4.merge_cells(f'A4:{get_column_letter(n_rc_cols)}4')
-        ws4['A4'] = f'Total: {len(res_conc)} conceptos'
-        ws4['A4'].font = Font(italic=True, size=10, color='4472C4')
-        ws4['A4'].alignment = center_align
+            ws4.merge_cells(f'A4:{get_column_letter(n_rc_cols)}4')
+            ws4['A4'] = f'Total: {len(res_conc)} conceptos'
+            ws4['A4'].font = Font(italic=True, size=10, color='4472C4')
+            ws4['A4'].alignment = center_align
 
-        for col_idx in range(1, n_rc_cols + 1):
-            cell = ws4.cell(row=res_header_row, column=col_idx) # reusando res_header_row=6
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = header_align
-            cell.border = thin_border
-
-        rc_col_list = list(res_conc.columns)
-        first_iva_idx_rc = rc_col_list.index(IVA_COL_ORDER[0]) + 1
-        ded_idx_rc = rc_col_list.index('Deducciones') + 1
-        total_idx_rc = rc_col_list.index('Total') + 1
-        first_iva_letter_rc = get_column_letter(first_iva_idx_rc)
-        ded_letter_rc = get_column_letter(ded_idx_rc)
-
-        for row in range(res_data_start, len(res_conc) + res_data_start):
             for col_idx in range(1, n_rc_cols + 1):
-                cell = ws4.cell(row=row, column=col_idx)
-                cell.alignment = center_align
-                col_name = rc_col_list[col_idx - 1]
+                cell = ws4.cell(row=res_header_row, column=col_idx) # reusando res_header_row=6
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = thin_border
 
-                if first_iva_idx_rc <= col_idx <= total_idx_rc:
-                    if col_name in col_list:
-                        v_col = get_column_letter(col_list.index(col_name) + 1)
-                        cell.value = f'=SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_conc_col}${7}:${mov_conc_col}${n_mov+7-1}, $A{row})'
-                        cell.number_format = money_fmt
-                    elif col_name == 'Deducciones':
-                        formula_parts = []
-                        for dc in deduccion_cols:
-                            v_col = get_column_letter(col_list.index(dc) + 1)
-                            formula_parts.append(f'SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_conc_col}${7}:${mov_conc_col}${n_mov+7-1}, $A{row})')
-                        cell.value = '=' + '+'.join(formula_parts) if formula_parts else 0
-                        cell.number_format = money_fmt
-                    elif col_name == 'Total':
-                        cell.value = f'=SUM({first_iva_letter_rc}{row}:{ded_letter_rc}{row})'
-                        cell.number_format = money_fmt
-                elif col_name == 'Cantidad':
-                    cell.value = f'=COUNTIFS(Movimientos!${mov_conc_col}${7}:${mov_conc_col}${n_mov+7-1}, $A{row})'
+            rc_col_list = list(res_conc.columns)
+            first_iva_idx_rc = rc_col_list.index(IVA_COL_ORDER[0]) + 1
+            ded_idx_rc = rc_col_list.index('Deducciones') + 1
+            total_idx_rc = rc_col_list.index('Total') + 1
+            first_iva_letter_rc = get_column_letter(first_iva_idx_rc)
+            ded_letter_rc = get_column_letter(ded_idx_rc)
+
+            for row in range(res_data_start, len(res_conc) + res_data_start):
+                for col_idx in range(1, n_rc_cols + 1):
+                    cell = ws4.cell(row=row, column=col_idx)
+                    cell.alignment = center_align
+                    col_name = rc_col_list[col_idx - 1]
+
+                    if first_iva_idx_rc <= col_idx <= total_idx_rc:
+                        if col_name in col_list:
+                            v_col = get_column_letter(col_list.index(col_name) + 1)
+                            cell.value = f'=SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_conc_col}${7}:${mov_conc_col}${n_mov+7-1}, $A{row})'
+                            cell.number_format = money_fmt
+                        elif col_name == 'Deducciones':
+                            formula_parts = []
+                            for dc in deduccion_cols:
+                                v_col = get_column_letter(col_list.index(dc) + 1)
+                                formula_parts.append(f'SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_conc_col}${7}:${mov_conc_col}${n_mov+7-1}, $A{row})')
+                            cell.value = '=' + '+'.join(formula_parts) if formula_parts else 0
+                            cell.number_format = money_fmt
+                        elif col_name == 'Total':
+                            cell.value = f'=SUM({first_iva_letter_rc}{row}:{ded_letter_rc}{row})'
+                            cell.number_format = money_fmt
+                    elif col_name == 'Cantidad':
+                        cell.value = f'=COUNTIFS(Movimientos!${mov_conc_col}${7}:${mov_conc_col}${n_mov+7-1}, $A{row})'
         
-        # Fila TOTAL GENERAL
-        total_row_rc = len(res_conc) + res_data_start
-        ws4.merge_cells(f'A{total_row_rc}:B{total_row_rc}')
-        ws4[f'A{total_row_rc}'] = "TOTAL GENERAL"
-        ws4[f'A{total_row_rc}'].font = Font(bold=True)
-        ws4[f'A{total_row_rc}'].alignment = Alignment(horizontal='right')
+            # Fila TOTAL GENERAL
+            total_row_rc = len(res_conc) + res_data_start
+            ws4.merge_cells(f'A{total_row_rc}:B{total_row_rc}')
+            ws4[f'A{total_row_rc}'] = "TOTAL GENERAL"
+            ws4[f'A{total_row_rc}'].font = Font(bold=True)
+            ws4[f'A{total_row_rc}'].alignment = Alignment(horizontal='right')
         
-        for col_idx in range(first_iva_idx_rc, n_rc_cols + 1):
-            col_letter = get_column_letter(col_idx)
-            cell = ws4.cell(row=total_row_rc, column=col_idx)
-            cell.value = f'=SUM({col_letter}{res_data_start}:{col_letter}{total_row_rc-1})'
-            cell.font = Font(bold=True)
-            cell.border = Border(top=Side(style='double'))
-            if col_idx < n_rc_cols:
+            for col_idx in range(first_iva_idx_rc, n_rc_cols + 1):
+                col_letter = get_column_letter(col_idx)
+                cell = ws4.cell(row=total_row_rc, column=col_idx)
+                cell.value = f'=SUM({col_letter}{res_data_start}:{col_letter}{total_row_rc-1})'
+                cell.font = Font(bold=True)
+                cell.border = Border(top=Side(style='double'))
+                if col_idx < n_rc_cols:
+                    cell.number_format = money_fmt
+
+            _autofit(ws4, n_rc_cols)
+
+            # ── Hoja Resumen por Concepto y Jur. (Pivot para CM05) ──
+            # 1. Identificar columnas que forman parte del "Neto" (Base Imponible)
+            # Incluimos Netos, Exento, Monotributo y cualquier otro que no sea IVA/PERC/RET/DEDUCC
+            cm05_neto_cols = [
+                c for c in IVA_COL_ORDER 
+                if any(x in c for x in ['Neto', 'Exento', 'Monotributo'])
+            ]
+            otros_adicionales = [
+                c for c in other_cols 
+                if not any(x in c.upper() for x in ['PERC', 'RET', 'DEDUCC', 'IVA'])
+            ]
+            cm05_neto_cols += otros_adicionales
+        
+            # 2. Obtener Jurisdicciones y Conceptos únicos
+            unique_jurs = sorted([str(j) for j in df['Jur.'].unique() if pd.notna(j) and str(j).strip()])
+            if not unique_jurs: unique_jurs = ["S/D"]
+        
+            conceptos_unicos_df = res_conc[['Concepto', 'Descripcion']].copy()
+        
+            n_rj_cols = 3 + len(unique_jurs) # Concepto, Desc, Jurs..., Total
+            res_jur_sheet_name = 'Resumen x Concepto y Jur.'
+            if res_jur_sheet_name in writer.book.sheetnames:
+                del writer.book[res_jur_sheet_name]
+            
+            # startrow=5 -> fila 6
+            conceptos_unicos_df.to_excel(writer, sheet_name='Resumen x Concepto y Jur.', index=False, startrow=5)
+            ws_rj = writer.sheets['Resumen x Concepto y Jur.']
+        
+            # Titulos y Estilos
+            ws_rj.merge_cells(f'A1:{get_column_letter(n_rj_cols)}1')
+            ws_rj['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+            ws_rj['A1'].font = title_font
+            ws_rj['A1'].fill = title_fill
+            ws_rj['A1'].alignment = center_align
+
+            ws_rj.merge_cells(f'A2:{get_column_letter(n_rj_cols)}2')
+            ws_rj['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'RESUMEN POR CONCEPTO Y JUR.'
+            ws_rj['A2'].font = report_type_font
+            ws_rj['A2'].alignment = center_align
+
+            ws_rj.merge_cells(f'A3:{get_column_letter(n_rj_cols)}3')
+            ws_rj['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+            ws_rj['A3'].font = Font(bold=True, size=11, color='2F5496')
+            ws_rj['A3'].alignment = center_align
+
+            ws_rj.merge_cells(f'A4:{get_column_letter(n_rj_cols)}4')
+            ws_rj['A4'] = f'Total: {len(conceptos_unicos_df)} conceptos x {len(unique_jurs)} jur.'
+            ws_rj['A4'].font = Font(italic=True, size=10, color='4472C4')
+            ws_rj['A4'].alignment = center_align
+
+            ws_rj.cell(row=res_header_row, column=1).value = 'Concepto'
+            ws_rj.cell(row=res_header_row, column=2).value = 'Descripcion'
+            for i, jur in enumerate(unique_jurs):
+                cell = ws_rj.cell(row=res_header_row, column=3+i)
+                cell.value = f"Jur {jur}"
+            ws_rj.cell(row=res_header_row, column=3+len(unique_jurs)).value = 'TOTAL'
+        
+            for col_idx in range(1, n_rj_cols + 1):
+                cell = ws_rj.cell(row=res_header_row, column=col_idx)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = thin_border
+
+            mov_jur_col = get_column_letter(col_list.index('Jur.') + 1)
+            for idx_c, (idx_df, row_data) in enumerate(conceptos_unicos_df.iterrows()):
+                curr_row = res_data_start + idx_c
+                ws_rj.cell(row=curr_row, column=1).value = row_data['Concepto']
+                ws_rj.cell(row=curr_row, column=2).value = row_data['Descripcion']
+            
+                for j_idx, jur in enumerate(unique_jurs):
+                    col_target = 3 + j_idx
+                    formula_parts = []
+                    for n_col in cm05_neto_cols:
+                        v_col_l = get_column_letter(col_list.index(n_col) + 1)
+                        formula_parts.append(
+                            f'SUMIFS(Movimientos!${v_col_l}${7}:${v_col_l}${n_mov+7-1}, '
+                            f'Movimientos!${mov_conc_col}${7}:${mov_conc_col}${n_mov+7-1}, $A{curr_row}, '
+                            f'Movimientos!${mov_jur_col}${7}:${mov_jur_col}${n_mov+7-1}, "{jur}")'
+                        )
+                    ws_rj.cell(row=curr_row, column=col_target).value = "=" + "+".join(formula_parts) if formula_parts else 0
+                    ws_rj.cell(row=curr_row, column=col_target).number_format = money_fmt
+                    ws_rj.cell(row=curr_row, column=col_target).alignment = center_align
+            
+                first_jur_letter = get_column_letter(3)
+                last_jur_letter = get_column_letter(3 + len(unique_jurs) - 1)
+                total_cell = ws_rj.cell(row=curr_row, column=3 + len(unique_jurs))
+                total_cell.value = f'=SUM({first_jur_letter}{curr_row}:{last_jur_letter}{curr_row})'
+                total_cell.number_format = money_fmt
+                total_cell.alignment = center_align
+                total_cell.font = Font(bold=True)
+
+            total_row_rj = res_data_start + len(conceptos_unicos_df)
+            ws_rj.merge_cells(f'A{total_row_rj}:B{total_row_rj}')
+            ws_rj[f'A{total_row_rj}'] = "TOTAL GENERAL"
+            ws_rj[f'A{total_row_rj}'].font = Font(bold=True)
+            ws_rj[f'A{total_row_rj}'].alignment = Alignment(horizontal='right')
+        
+            for col_idx in range(3, n_rj_cols + 1):
+                col_l = get_column_letter(col_idx)
+                cell = ws_rj.cell(row=total_row_rj, column=col_idx)
+                cell.value = f'=SUM({col_l}{res_data_start}:{col_l}{total_row_rj-1})'
+                cell.font = Font(bold=True)
+                cell.border = Border(top=Side(style='double'))
                 cell.number_format = money_fmt
+                cell.alignment = center_align
 
-        _autofit(ws4, n_rc_cols)
+            _autofit(ws_rj, n_rj_cols)
 
-        # ── Hoja Resumen por Concepto y Jur. (Pivot para CM05) ──
-        # 1. Identificar columnas que forman parte del "Neto" (Base Imponible)
-        # Incluimos Netos, Exento, Monotributo y cualquier otro que no sea IVA/PERC/RET/DEDUCC
-        cm05_neto_cols = [
-            c for c in IVA_COL_ORDER 
-            if any(x in c for x in ['Neto', 'Exento', 'Monotributo'])
-        ]
-        otros_adicionales = [
-            c for c in other_cols 
-            if not any(x in c.upper() for x in ['PERC', 'RET', 'DEDUCC', 'IVA'])
-        ]
-        cm05_neto_cols += otros_adicionales
+            # ── Hoja Resumen por Proveedor (agrupado por CUIT) ────
+            res = resumen.groupby('CUIT').agg(
+                Proveedor=('Proveedor', 'first'),
+                **{c: (c, 'sum') for c in IVA_COL_ORDER},
+                **{c: (c, 'sum') for c in individual_other_cols},
+                Deducciones=('Total', 'count'), # placeholder
+                Cantidad=('Total', 'count'),
+            ).reset_index()
+
+            res['Total'] = 0.0
+            cols_order = ['CUIT', 'Proveedor'] + IVA_COL_ORDER + individual_other_cols + ['Deducciones', 'Total', 'Cantidad']
+            cols_order = [c for c in cols_order if c in res.columns]
+            res = res[cols_order]
+            # Sort logic
+            res['_sort'] = resumen.groupby('CUIT')[sum_cols].sum().sum(axis=1).values
+            res = res.sort_values('_sort', ascending=False).drop(columns='_sort')
+
+            res.to_excel(writer, sheet_name='Resumen x Proveedor', index=False, startrow=5)
+            ws2 = writer.sheets['Resumen x Proveedor']
+            n_res_cols = len(res.columns)
+
+            ws2.merge_cells(f'A1:{get_column_letter(n_res_cols)}1')
+            ws2['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+            ws2['A1'].font = title_font; ws2['A1'].fill = title_fill; ws2['A1'].alignment = center_align
+
+            ws2.merge_cells(f'A2:{get_column_letter(n_res_cols)}2')
+            ws2['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'RESUMEN POR PROVEEDOR'
+            ws2['A2'].font = report_type_font; ws2['A2'].alignment = center_align
         
-        # 2. Obtener Jurisdicciones y Conceptos únicos
-        unique_jurs = sorted([str(j) for j in df['Jur.'].unique() if pd.notna(j) and str(j).strip()])
-        if not unique_jurs: unique_jurs = ["S/D"]
+            ws2.merge_cells(f'A3:{get_column_letter(n_res_cols)}3')
+            ws2['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+            ws2['A3'].font = Font(bold=True, size=11, color='2F5496'); ws2['A3'].alignment = center_align
+
+            ws2.merge_cells(f'A4:{get_column_letter(n_res_cols)}4')
+            ws2['A4'] = f'Total: {len(res)} proveedores'
+            ws2['A4'].font = Font(italic=True, size=10, color='4472C4'); ws2['A4'].alignment = center_align
         
-        conceptos_unicos_df = res_conc[['Concepto', 'Descripcion']].copy()
-        
-        n_rj_cols = 3 + len(unique_jurs) # Concepto, Desc, Jurs..., Total
-        res_jur_sheet_name = 'Resumen x Concepto y Jur.'
-        if res_jur_sheet_name in writer.book.sheetnames:
-            del writer.book[res_jur_sheet_name]
-            
-        # startrow=5 -> fila 6
-        conceptos_unicos_df.to_excel(writer, sheet_name='Resumen x Concepto y Jur.', index=False, startrow=5)
-        ws_rj = writer.sheets['Resumen x Concepto y Jur.']
-        
-        # Titulos y Estilos
-        ws_rj.merge_cells(f'A1:{get_column_letter(n_rj_cols)}1')
-        ws_rj['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
-        ws_rj['A1'].font = title_font
-        ws_rj['A1'].fill = title_fill
-        ws_rj['A1'].alignment = center_align
-
-        ws_rj.merge_cells(f'A2:{get_column_letter(n_rj_cols)}2')
-        ws_rj['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'RESUMEN POR CONCEPTO Y JUR.'
-        ws_rj['A2'].font = report_type_font
-        ws_rj['A2'].alignment = center_align
-
-        ws_rj.merge_cells(f'A3:{get_column_letter(n_rj_cols)}3')
-        ws_rj['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
-        ws_rj['A3'].font = Font(bold=True, size=11, color='2F5496')
-        ws_rj['A3'].alignment = center_align
-
-        ws_rj.merge_cells(f'A4:{get_column_letter(n_rj_cols)}4')
-        ws_rj['A4'] = f'Total: {len(conceptos_unicos_df)} conceptos x {len(unique_jurs)} jur.'
-        ws_rj['A4'].font = Font(italic=True, size=10, color='4472C4')
-        ws_rj['A4'].alignment = center_align
-
-        ws_rj.cell(row=res_header_row, column=1).value = 'Concepto'
-        ws_rj.cell(row=res_header_row, column=2).value = 'Descripcion'
-        for i, jur in enumerate(unique_jurs):
-            cell = ws_rj.cell(row=res_header_row, column=3+i)
-            cell.value = f"Jur {jur}"
-        ws_rj.cell(row=res_header_row, column=3+len(unique_jurs)).value = 'TOTAL'
-        
-        for col_idx in range(1, n_rj_cols + 1):
-            cell = ws_rj.cell(row=res_header_row, column=col_idx)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = header_align
-            cell.border = thin_border
-
-        mov_jur_col = get_column_letter(col_list.index('Jur.') + 1)
-        for idx_c, (idx_df, row_data) in enumerate(conceptos_unicos_df.iterrows()):
-            curr_row = res_data_start + idx_c
-            ws_rj.cell(row=curr_row, column=1).value = row_data['Concepto']
-            ws_rj.cell(row=curr_row, column=2).value = row_data['Descripcion']
-            
-            for j_idx, jur in enumerate(unique_jurs):
-                col_target = 3 + j_idx
-                formula_parts = []
-                for n_col in cm05_neto_cols:
-                    v_col_l = get_column_letter(col_list.index(n_col) + 1)
-                    formula_parts.append(
-                        f'SUMIFS(Movimientos!${v_col_l}${7}:${v_col_l}${n_mov+7-1}, '
-                        f'Movimientos!${mov_conc_col}${7}:${mov_conc_col}${n_mov+7-1}, $A{curr_row}, '
-                        f'Movimientos!${mov_jur_col}${7}:${mov_jur_col}${n_mov+7-1}, "{jur}")'
-                    )
-                ws_rj.cell(row=curr_row, column=col_target).value = "=" + "+".join(formula_parts) if formula_parts else 0
-                ws_rj.cell(row=curr_row, column=col_target).number_format = money_fmt
-                ws_rj.cell(row=curr_row, column=col_target).alignment = center_align
-            
-            first_jur_letter = get_column_letter(3)
-            last_jur_letter = get_column_letter(3 + len(unique_jurs) - 1)
-            total_cell = ws_rj.cell(row=curr_row, column=3 + len(unique_jurs))
-            total_cell.value = f'=SUM({first_jur_letter}{curr_row}:{last_jur_letter}{curr_row})'
-            total_cell.number_format = money_fmt
-            total_cell.alignment = center_align
-            total_cell.font = Font(bold=True)
-
-        total_row_rj = res_data_start + len(conceptos_unicos_df)
-        ws_rj.merge_cells(f'A{total_row_rj}:B{total_row_rj}')
-        ws_rj[f'A{total_row_rj}'] = "TOTAL GENERAL"
-        ws_rj[f'A{total_row_rj}'].font = Font(bold=True)
-        ws_rj[f'A{total_row_rj}'].alignment = Alignment(horizontal='right')
-        
-        for col_idx in range(3, n_rj_cols + 1):
-            col_l = get_column_letter(col_idx)
-            cell = ws_rj.cell(row=total_row_rj, column=col_idx)
-            cell.value = f'=SUM({col_l}{res_data_start}:{col_l}{total_row_rj-1})'
-            cell.font = Font(bold=True)
-            cell.border = Border(top=Side(style='double'))
-            cell.number_format = money_fmt
-            cell.alignment = center_align
-
-        _autofit(ws_rj, n_rj_cols)
-
-        # ── Hoja Resumen por Proveedor (agrupado por CUIT) ────
-        res = resumen.groupby('CUIT').agg(
-            Proveedor=('Proveedor', 'first'),
-            **{c: (c, 'sum') for c in IVA_COL_ORDER},
-            **{c: (c, 'sum') for c in individual_other_cols},
-            Deducciones=('Total', 'count'), # placeholder
-            Cantidad=('Total', 'count'),
-        ).reset_index()
-
-        res['Total'] = 0.0
-        cols_order = ['CUIT', 'Proveedor'] + IVA_COL_ORDER + individual_other_cols + ['Deducciones', 'Total', 'Cantidad']
-        cols_order = [c for c in cols_order if c in res.columns]
-        res = res[cols_order]
-        # Sort logic
-        res['_sort'] = resumen.groupby('CUIT')[sum_cols].sum().sum(axis=1).values
-        res = res.sort_values('_sort', ascending=False).drop(columns='_sort')
-
-        res.to_excel(writer, sheet_name='Resumen x Proveedor', index=False, startrow=5)
-        ws2 = writer.sheets['Resumen x Proveedor']
-        n_res_cols = len(res.columns)
-
-        ws2.merge_cells(f'A1:{get_column_letter(n_res_cols)}1')
-        ws2['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
-        ws2['A1'].font = title_font; ws2['A1'].fill = title_fill; ws2['A1'].alignment = center_align
-
-        ws2.merge_cells(f'A2:{get_column_letter(n_res_cols)}2')
-        ws2['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'RESUMEN POR PROVEEDOR'
-        ws2['A2'].font = report_type_font; ws2['A2'].alignment = center_align
-        
-        ws2.merge_cells(f'A3:{get_column_letter(n_res_cols)}3')
-        ws2['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
-        ws2['A3'].font = Font(bold=True, size=11, color='2F5496'); ws2['A3'].alignment = center_align
-
-        ws2.merge_cells(f'A4:{get_column_letter(n_res_cols)}4')
-        ws2['A4'] = f'Total: {len(res)} proveedores'
-        ws2['A4'].font = Font(italic=True, size=10, color='4472C4'); ws2['A4'].alignment = center_align
-        
-        for col_idx in range(1, n_res_cols + 1):
-            cell = ws2.cell(row=res_header_row, column=col_idx)
-            cell.font = header_font; cell.fill = header_fill; cell.alignment = header_align; cell.border = thin_border
-
-        res_col_list = list(res.columns)
-        first_iva_idx_res = res_col_list.index(IVA_COL_ORDER[0]) + 1
-        ded_idx_res = res_col_list.index('Deducciones') + 1
-        total_idx_res = res_col_list.index('Total') + 1
-        first_iva_letter_res = get_column_letter(first_iva_idx_res)
-        ded_letter_res = get_column_letter(ded_idx_res)
-        
-        for row in range(res_data_start, len(res) + res_data_start):
             for col_idx in range(1, n_res_cols + 1):
-                cell = ws2.cell(row=row, column=col_idx)
-                cell.alignment = center_align
-                col_name = res_col_list[col_idx - 1]
+                cell = ws2.cell(row=res_header_row, column=col_idx)
+                cell.font = header_font; cell.fill = header_fill; cell.alignment = header_align; cell.border = thin_border
+
+            res_col_list = list(res.columns)
+            first_iva_idx_res = res_col_list.index(IVA_COL_ORDER[0]) + 1
+            ded_idx_res = res_col_list.index('Deducciones') + 1
+            total_idx_res = res_col_list.index('Total') + 1
+            first_iva_letter_res = get_column_letter(first_iva_idx_res)
+            ded_letter_res = get_column_letter(ded_idx_res)
+        
+            for row in range(res_data_start, len(res) + res_data_start):
+                for col_idx in range(1, n_res_cols + 1):
+                    cell = ws2.cell(row=row, column=col_idx)
+                    cell.alignment = center_align
+                    col_name = res_col_list[col_idx - 1]
                 
-                if first_iva_idx_res <= col_idx <= total_idx_res:
-                    if col_name in col_list:
-                        v_col = get_column_letter(col_list.index(col_name) + 1)
-                        cell.value = f'=SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_cuit_col}${7}:${mov_cuit_col}${n_mov+7-1}, $A{row})'
-                        cell.number_format = money_fmt
-                    elif col_name == 'Deducciones':
-                        formula_parts = []
-                        for dc in deduccion_cols:
-                            v_col = get_column_letter(col_list.index(dc) + 1)
-                            formula_parts.append(f'SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_cuit_col}${7}:${mov_cuit_col}${n_mov+7-1}, $A{row})')
-                        cell.value = '=' + '+'.join(formula_parts) if formula_parts else 0
-                        cell.number_format = money_fmt
-                    elif col_name == 'Total':
-                        cell.value = f'=SUM({first_iva_letter_res}{row}:{ded_letter_res}{row})'
-                        cell.number_format = money_fmt
-                elif col_name == 'Cantidad':
-                    cell.value = f'=COUNTIFS(Movimientos!${mov_cuit_col}${7}:${mov_cuit_col}${n_mov+7-1}, $A{row})'
+                    if first_iva_idx_res <= col_idx <= total_idx_res:
+                        if col_name in col_list:
+                            v_col = get_column_letter(col_list.index(col_name) + 1)
+                            cell.value = f'=SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_cuit_col}${7}:${mov_cuit_col}${n_mov+7-1}, $A{row})'
+                            cell.number_format = money_fmt
+                        elif col_name == 'Deducciones':
+                            formula_parts = []
+                            for dc in deduccion_cols:
+                                v_col = get_column_letter(col_list.index(dc) + 1)
+                                formula_parts.append(f'SUMIFS(Movimientos!${v_col}${7}:${v_col}${n_mov+7-1}, Movimientos!${mov_cuit_col}${7}:${mov_cuit_col}${n_mov+7-1}, $A{row})')
+                            cell.value = '=' + '+'.join(formula_parts) if formula_parts else 0
+                            cell.number_format = money_fmt
+                        elif col_name == 'Total':
+                            cell.value = f'=SUM({first_iva_letter_res}{row}:{ded_letter_res}{row})'
+                            cell.number_format = money_fmt
+                    elif col_name == 'Cantidad':
+                        cell.value = f'=COUNTIFS(Movimientos!${mov_cuit_col}${7}:${mov_cuit_col}${n_mov+7-1}, $A{row})'
                 
-                # Formato CUIT como texto
+                    # Formato CUIT como texto
 
-        total_row = len(res) + res_data_start
-        ws2.merge_cells(f'A{total_row}:B{total_row}')
-        ws2[f'A{total_row}'] = "TOTAL GENERAL"
-        ws2[f'A{total_row}'].font = Font(bold=True); ws2[f'A{total_row}'].alignment = Alignment(horizontal='right')
+            total_row = len(res) + res_data_start
+            ws2.merge_cells(f'A{total_row}:B{total_row}')
+            ws2[f'A{total_row}'] = "TOTAL GENERAL"
+            ws2[f'A{total_row}'].font = Font(bold=True); ws2[f'A{total_row}'].alignment = Alignment(horizontal='right')
         
-        for col_idx in range(first_iva_idx_res, n_res_cols + 1):
-            col_letter = get_column_letter(col_idx)
-            cell = ws2.cell(row=total_row, column=col_idx)
-            cell.value = f'=SUM({col_letter}{res_data_start}:{col_letter}{total_row-1})'
-            cell.font = Font(bold=True); cell.border = Border(top=Side(style='double'))
-            if col_idx < n_res_cols: cell.number_format = money_fmt
+            for col_idx in range(first_iva_idx_res, n_res_cols + 1):
+                col_letter = get_column_letter(col_idx)
+                cell = ws2.cell(row=total_row, column=col_idx)
+                cell.value = f'=SUM({col_letter}{res_data_start}:{col_letter}{total_row-1})'
+                cell.font = Font(bold=True); cell.border = Border(top=Side(style='double'))
+                if col_idx < n_res_cols: cell.number_format = money_fmt
             
-        _autofit(ws2, n_res_cols)
+            _autofit(ws2, n_res_cols)
 
-        # ── Hoja Mayor x Proveedor ────────────────────────────
-        df_with_idx = df.copy()
-        # Original data rows in Movimientos start at Row 7
-        df_with_idx['_orig_row'] = range(7, len(df) + 7)
+            # ── Hoja Mayor x Proveedor ────────────────────────────
+            df_with_idx = df.copy()
+            # Original data rows in Movimientos start at Row 7
+            df_with_idx['_orig_row'] = range(7, len(df) + 7)
         
-        mayor = df_with_idx.sort_values(['CUIT', 'Dia'])
+            mayor = df_with_idx.sort_values(['CUIT', 'Dia'])
         
-        def format_comp(r):
-            pv_s = f"{r['PV']:05d}"
-            nro_s = f"{r['Nro.']:08d}" if isinstance(r['Nro.'], int) else str(r['Nro.'])
-            return f"{pv_s}-{nro_s}{r['Letra']}"
+            def format_comp(r):
+                pv_s = f"{r['PV']:05d}"
+                nro_s = f"{r['Nro.']:08d}" if isinstance(r['Nro.'], int) else str(r['Nro.'])
+                return f"{pv_s}-{nro_s}{r['Letra']}"
             
-        mayor['Comp.'] = mayor.apply(format_comp, axis=1)
-        mayor['Saldo Acumulado'] = mayor.groupby('CUIT')['Total'].cumsum()
+            mayor['Comp.'] = mayor.apply(format_comp, axis=1)
+            mayor['Saldo Acumulado'] = mayor.groupby('CUIT')['Total'].cumsum()
         
-        cols_mayor = ['CUIT', 'Proveedor', 'Dia', 'Tipo', 'Comp.', 'Concepto', 'Total', 'Saldo Acumulado', '_orig_row']
-        mayor = mayor[cols_mayor]
+            cols_mayor = ['CUIT', 'Proveedor', 'Dia', 'Tipo', 'Comp.', 'Concepto', 'Total', 'Saldo Acumulado', '_orig_row']
+            mayor = mayor[cols_mayor]
         
-        n_mayor_cols = len(mayor.columns) - 1
-        # startrow=5 -> fila 6
-        mayor.to_excel(writer, sheet_name='Mayor x Proveedor', index=False, startrow=5)
-        ws5 = writer.sheets['Mayor x Proveedor']
+            n_mayor_cols = len(mayor.columns) - 1
+            # startrow=5 -> fila 6
+            mayor.to_excel(writer, sheet_name='Mayor x Proveedor', index=False, startrow=5)
+            ws5 = writer.sheets['Mayor x Proveedor']
 
-        ws5.merge_cells(f'A1:{get_column_letter(n_mayor_cols)}1')
-        ws5['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
-        ws5['A1'].font = title_font
-        ws5['A1'].fill = title_fill
-        ws5['A1'].alignment = center_align
+            ws5.merge_cells(f'A1:{get_column_letter(n_mayor_cols)}1')
+            ws5['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+            ws5['A1'].font = title_font
+            ws5['A1'].fill = title_fill
+            ws5['A1'].alignment = center_align
 
-        ws5.merge_cells(f'A2:{get_column_letter(n_mayor_cols)}2')
-        ws5['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'MAYOR AUXILIAR'
-        ws5['A2'].font = report_type_font
-        ws5['A2'].alignment = center_align
+            ws5.merge_cells(f'A2:{get_column_letter(n_mayor_cols)}2')
+            ws5['A2'] = meta['tipo_reporte'].upper() if meta['tipo_reporte'] else 'MAYOR AUXILIAR'
+            ws5['A2'].font = report_type_font
+            ws5['A2'].alignment = center_align
 
-        ws5.merge_cells(f'A3:{get_column_letter(n_mayor_cols)}3')
-        ws5['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
-        ws5['A3'].font = Font(bold=True, size=11, color='2F5496')
-        ws5['A3'].alignment = center_align
+            ws5.merge_cells(f'A3:{get_column_letter(n_mayor_cols)}3')
+            ws5['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+            ws5['A3'].font = Font(bold=True, size=11, color='2F5496')
+            ws5['A3'].alignment = center_align
 
-        ws5.merge_cells(f'A4:{get_column_letter(n_mayor_cols)}4')
-        ws5['A4'] = f'Total: {len(mayor)} movimientos'
-        ws5['A4'].font = Font(italic=True, size=10, color='4472C4')
-        ws5['A4'].alignment = center_align
+            ws5.merge_cells(f'A4:{get_column_letter(n_mayor_cols)}4')
+            ws5['A4'] = f'Total: {len(mayor)} movimientos'
+            ws5['A4'].font = Font(italic=True, size=10, color='4472C4')
+            ws5['A4'].alignment = center_align
         
-        total_mov_col = get_column_letter(col_list.index('Total') + 1)
+            total_mov_col = get_column_letter(col_list.index('Total') + 1)
 
-        for col_idx in range(1, n_mayor_cols + 1):
-            cell = ws5.cell(row=res_header_row, column=col_idx) # reusando res_header_row=6
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = header_align
-            cell.border = thin_border
-            
-        for row_idx in range(res_data_start, len(mayor) + res_data_start): # res_data_start=7
-            orig_row_idx = row_idx - res_data_start
-            orig_row = mayor.iloc[orig_row_idx]['_orig_row']
             for col_idx in range(1, n_mayor_cols + 1):
-                cell = ws5.cell(row=row_idx, column=col_idx)
-                cell.alignment = center_align
-                if col_idx == 7: # Total
-                    cell.value = f'=Movimientos!{total_mov_col}{orig_row}'
-                    cell.number_format = money_fmt
-                elif col_idx == 8: # Saldo Acumulado
-                    # Formula unificada: IF(mismo CUIT que arriba, saldo_ant + total_actual, total_actual)
-                    if row_idx == res_data_start:
-                        cell.value = f'=G{row_idx}'
-                    else:
-                        cell.value = f'=IF(A{row_idx}=A{row_idx-1}, H{row_idx-1}+G{row_idx}, G{row_idx})'
-                    cell.number_format = money_fmt
+                cell = ws5.cell(row=res_header_row, column=col_idx) # reusando res_header_row=6
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = thin_border
+            
+            for row_idx in range(res_data_start, len(mayor) + res_data_start): # res_data_start=7
+                orig_row_idx = row_idx - res_data_start
+                orig_row = mayor.iloc[orig_row_idx]['_orig_row']
+                for col_idx in range(1, n_mayor_cols + 1):
+                    cell = ws5.cell(row=row_idx, column=col_idx)
+                    cell.alignment = center_align
+                    if col_idx == 7: # Total
+                        cell.value = f'=Movimientos!{total_mov_col}{orig_row}'
+                        cell.number_format = money_fmt
+                    elif col_idx == 8: # Saldo Acumulado
+                        # Formula unificada: IF(mismo CUIT que arriba, saldo_ant + total_actual, total_actual)
+                        if row_idx == res_data_start:
+                            cell.value = f'=G{row_idx}'
+                        else:
+                            cell.value = f'=IF(A{row_idx}=A{row_idx-1}, H{row_idx-1}+G{row_idx}, G{row_idx})'
+                        cell.number_format = money_fmt
         
-        ws5.delete_cols(n_mayor_cols + 1) # Borrar columna auxiliar
-        _autofit(ws5, n_mayor_cols)
+            ws5.delete_cols(n_mayor_cols + 1) # Borrar columna auxiliar
+            _autofit(ws5, n_mayor_cols)
+
+        # ── Hoja ARCA (datos del CSV de ARCA) ──────────────────
+        if cruce_arca and df_arca is not None and not df_arca.empty:
+            df_arca.to_excel(writer, sheet_name='ARCA', index=False, startrow=5)
+            ws_arca = writer.sheets['ARCA']
+            n_arca_cols = len(df_arca.columns)
+
+            ws_arca.merge_cells(f'A1:{get_column_letter(n_arca_cols)}1')
+            ws_arca['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+            ws_arca['A1'].font = title_font; ws_arca['A1'].fill = title_fill; ws_arca['A1'].alignment = center_align
+
+            ws_arca.merge_cells(f'A2:{get_column_letter(n_arca_cols)}2')
+            ws_arca['A2'] = f"{meta['tipo_reporte'].upper()} - COMPROBANTES ARCA"
+            ws_arca['A2'].font = report_type_font; ws_arca['A2'].alignment = center_align
+
+            ws_arca.merge_cells(f'A3:{get_column_letter(n_arca_cols)}3')
+            ws_arca['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+            ws_arca['A3'].font = Font(bold=True, size=11, color='2F5496'); ws_arca['A3'].alignment = center_align
+
+            ws_arca.merge_cells(f'A4:{get_column_letter(n_arca_cols)}4')
+            ws_arca['A4'] = f'Total: {len(df_arca)} comprobantes'
+            ws_arca['A4'].font = Font(italic=True, size=10, color='4472C4'); ws_arca['A4'].alignment = center_align
+
+            for col_idx in range(1, n_arca_cols + 1):
+                cell = ws_arca.cell(row=6, column=col_idx)
+                cell.font = header_font; cell.fill = header_fill
+                cell.alignment = header_align; cell.border = thin_border
+
+            # Identificar columnas monetarias: todas las numéricas excepto PV, Nro., CUIT, etc.
+            arca_col_list = list(df_arca.columns)
+            non_money = {'Fecha', 'Comprobante', 'PV', 'Nro.', 'Tipo Doc.', 'CUIT', 'Razon Social', 'Auxiliar'}
+            arca_money_indices = []
+            for ci, cn in enumerate(arca_col_list):
+                if cn not in non_money and df_arca[cn].dtype in ('float64', 'int64', 'float32', 'int32'):
+                    arca_money_indices.append(ci + 1)  # 1-indexed
+
+            for row_idx in range(7, len(df_arca) + 7):
+                for col_idx in range(1, n_arca_cols + 1):
+                    cell = ws_arca.cell(row=row_idx, column=col_idx)
+                    cell.alignment = center_align
+                    if col_idx in arca_money_indices:
+                        cell.number_format = money_fmt
+                if (row_idx - 7) % 2 == 0:
+                    for col_idx in range(1, n_arca_cols + 1):
+                        ws_arca.cell(row=row_idx, column=col_idx).fill = zebra_fill
+
+            _autofit(ws_arca, n_arca_cols)
 
     print(f"\n  Excel guardado en: {output_path}")
 
