@@ -40,7 +40,7 @@ st.markdown("""
 .block-container {
     padding-top: 2.5rem !important;
     padding-bottom: 3rem !important;
-    max-width: 680px !important;
+    max-width: 860px !important;
 }
 
 h1, h2, h3, h4, p, span, div, label {
@@ -60,7 +60,7 @@ h1, h2, h3, h4, p, span, div, label {
 .etl-title {
     font-family: 'Syne', sans-serif !important;
     font-weight: 800;
-    font-size: 2.8rem !important;
+    font-size: 3.4rem !important;
     line-height: 1.4;
     color: var(--text) !important;
     text-align: center;
@@ -344,7 +344,7 @@ ul[role="listbox"] li[aria-selected="true"],
 # ─── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div>
-    <h1 class="etl-title">Movimientos a<span> Excel</span></h1>
+    <h1 class="etl-title">Transformación<span> TXT</span></h1>
     <p class="etl-subtitle">TXT  →  XLSX</p>
 </div>
 <hr class="divider">
