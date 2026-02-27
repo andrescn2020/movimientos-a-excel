@@ -896,8 +896,8 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
 
             n_rt_cols = len(res_tipo.columns)
             # startrow=5 -> fila 6
-            res_tipo.to_excel(writer, sheet_name='Resumen x Tipo', index=False, startrow=5)
-            ws3 = writer.sheets['Resumen x Tipo']
+            res_tipo.to_excel(writer, sheet_name='Resumen x Comprobante', index=False, startrow=5)
+            ws3 = writer.sheets['Resumen x Comprobante']
         
             ws3.merge_cells(f'A1:{get_column_letter(n_rt_cols)}1')
             ws3['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'

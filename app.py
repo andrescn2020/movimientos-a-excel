@@ -304,22 +304,36 @@ header[data-testid="stHeader"] *,
 }
 /* Selectbox dropdown menu */
 [data-baseweb="popover"],
+[data-baseweb="popover"] > div,
 [data-baseweb="menu"],
-ul[role="listbox"] {
+ul[role="listbox"],
+div[data-baseweb="popover"] div,
+div[data-baseweb="popover"] ul {
     background: #1a1d24 !important;
     background-color: #1a1d24 !important;
+    border-color: var(--border) !important;
+}
+[data-baseweb="popover"] {
     border: 1px solid var(--border) !important;
+    border-radius: var(--radius) !important;
 }
 ul[role="listbox"] li,
-[data-baseweb="menu"] li {
+[data-baseweb="menu"] li,
+[data-baseweb="popover"] li,
+li[role="option"] {
     background: #1a1d24 !important;
+    background-color: #1a1d24 !important;
     color: var(--text) !important;
 }
 ul[role="listbox"] li:hover,
 [data-baseweb="menu"] li:hover,
+[data-baseweb="popover"] li:hover,
+li[role="option"]:hover,
 ul[role="listbox"] li[aria-selected="true"],
-[data-baseweb="menu"] li[aria-selected="true"] {
+[data-baseweb="menu"] li[aria-selected="true"],
+li[role="option"][aria-selected="true"] {
     background: var(--surface) !important;
+    background-color: var(--surface) !important;
     color: var(--accent) !important;
 }
 
@@ -360,6 +374,32 @@ herramienta = st.selectbox(
     options=[TOOL_MOVIMIENTOS, TOOL_PORTAL_IVA],
     index=0,
 )
+
+with st.expander("📋 Códigos de comprobantes ARCA"):
+    st.markdown("""
+| Código | Tipo | Código | Tipo | Código | Tipo |
+|--------|------|--------|------|--------|------|
+| 1 | FC A | 2 | ND A | 3 | NC A |
+| 6 | FC B | 7 | ND B | 8 | NC B |
+| 11 | FC C | 12 | ND C | 13 | NC C |
+| 51 | FC M | 52 | ND M | 53 | NC M |
+| 19 | FC | 20 | ND | 21 | NC |
+| 22 | FC | 37 | ND | 38 | NC |
+| 195 | FC T | 196 | ND T | 197 | NC T |
+| 201 | FC A | 202 | ND A | 203 | NC A |
+| 206 | FC B | 207 | ND B | 208 | NC B |
+| 211 | FC C | 212 | ND C | 213 | NC C |
+| 81 | TF A | 45 | ND A | 48 | NC A |
+| 82 | TF B | 46 | ND B | 43 | NC B |
+| 111 | TF C | 47 | ND C | 44 | NC C |
+| 118 | TF M | 90 | NC | 83 | TK |
+| 109 | TK C | 110 | TK | 112 | TK A |
+| 113 | TK B | 114 | TK C | 115 | TK A |
+| 116 | TK B | 117 | TK C | 119 | TK M |
+| 120 | TK M | | | | |
+
+**FC** = Factura · **NC** = Nota de Crédito · **ND** = Nota de Débito · **TF** = Tique Factura · **TK** = Tique
+    """)
 
 if herramienta == TOOL_MOVIMIENTOS:
         # ─── Card 01: Archivo ──────────────────────────────────────────────────────────
