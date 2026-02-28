@@ -20,4 +20,8 @@ __pycache__/
 *.pdf
 *.csv
 
-comando-entorno-virtual.txt
+# Ignorar todos los archivos .txt por privacidad
+*.txt
+
+# PERO NO ignorar el archivo de requerimientos
+!requirements.txt
