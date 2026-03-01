@@ -499,7 +499,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                 row[nombre] += monto
 
         # Columna Auxiliar: placeholder (formula se agrega después de escribir el Excel)
-        if con_auxiliar:
+        if con_auxiliar or cruce_arca:
             row['Auxiliar'] = ''
 
         row['Total'] = t['Total']
@@ -547,10 +547,11 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
         zebra_fill = PatternFill('solid', fgColor='D6E4F0')
         money_fmt = '$#,##0.00'
 
-        # ── Hoja Movimientos ──────────────────────────────────
+        # ── Hoja Movimientos / SISTEMA ──────────────────────────────────
         # startrow=5 significa que los encabezados del DataFrame van en la fila 6
-        df.to_excel(writer, sheet_name='Movimientos', index=False, startrow=5)
-        ws = writer.sheets['Movimientos']
+        mov_sheet_name = 'SISTEMA' if cruce_arca else 'Movimientos'
+        df.to_excel(writer, sheet_name=mov_sheet_name, index=False, startrow=5)
+        ws = writer.sheets[mov_sheet_name]
 
         # Estilo de Reporte (Rojo/Diferente para resaltar)
         report_type_font = Font(bold=True, size=12, color='C00000') # Rojo oscuro
@@ -642,17 +643,65 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             cell.alignment = center_align
 
         # ── Formulas Auxiliar (interactivas) ───────────────────
-        if con_auxiliar and 'Auxiliar' in col_list:
+        if (con_auxiliar or cruce_arca) and 'Auxiliar' in col_list:
             aux_col_idx = col_list.index('Auxiliar') + 1
+            aux_col_letter = get_column_letter(aux_col_idx)
             tipo_letter = get_column_letter(col_list.index('Tipo') + 1)
             letra_letter = get_column_letter(col_list.index('Letra') + 1)
             pv_letter = get_column_letter(col_list.index('PV') + 1)
             nro_letter = get_column_letter(col_list.index('Nro.') + 1)
             cuit_letter = get_column_letter(col_list.index('CUIT') + 1)
+            total_col_letter = get_column_letter(col_list.index('Total') + 1)
             for row in range(data_start_row, len(df) + data_start_row):
                 ws.cell(row=row, column=aux_col_idx).value = (
                     f'={tipo_letter}{row}&" "&{letra_letter}{row}&{pv_letter}{row}&{nro_letter}{row}&{cuit_letter}{row}'
                 )
+
+        # ── CRUCE + DIFF formulas en SISTEMA ──────────────────────
+        if cruce_arca and 'Auxiliar' in col_list and df_arca is not None and not df_arca.empty:
+            # Agregar columnas CRUCE y DIFF al final
+            cruce_col_idx = total_cols + 1
+            diff_col_idx = total_cols + 2
+            cruce_col_letter = get_column_letter(cruce_col_idx)
+            diff_col_letter = get_column_letter(diff_col_idx)
+
+            # Headers
+            ws.cell(row=6, column=cruce_col_idx).value = 'CRUCE'
+            ws.cell(row=6, column=cruce_col_idx).font = header_font
+            ws.cell(row=6, column=cruce_col_idx).fill = PatternFill('solid', fgColor='7030A0')
+            ws.cell(row=6, column=cruce_col_idx).alignment = header_align
+            ws.cell(row=6, column=cruce_col_idx).border = thin_border
+
+            ws.cell(row=6, column=diff_col_idx).value = 'DIFF'
+            ws.cell(row=6, column=diff_col_idx).font = header_font
+            ws.cell(row=6, column=diff_col_idx).fill = PatternFill('solid', fgColor='7030A0')
+            ws.cell(row=6, column=diff_col_idx).alignment = header_align
+            ws.cell(row=6, column=diff_col_idx).border = thin_border
+
+            # Calcular rango de lookup en ARCA (Auxiliar:Total son las 2 ultimas cols)
+            arca_col_list = list(df_arca.columns)
+            arca_aux_col_letter = get_column_letter(arca_col_list.index('Auxiliar') + 1) if 'Auxiliar' in arca_col_list else 'A'
+            arca_total_col_letter = get_column_letter(arca_col_list.index('Total') + 1) if 'Total' in arca_col_list else 'B'
+            arca_total_col_offset = arca_col_list.index('Total') - arca_col_list.index('Auxiliar') + 1 if 'Auxiliar' in arca_col_list and 'Total' in arca_col_list else 2
+            arca_last_data_row = len(df_arca) + 6  # data starts at row 7
+
+            for row in range(data_start_row, len(df) + data_start_row):
+                # CRUCE: VLOOKUP en ARCA buscando Auxiliar, trayendo Total
+                ws.cell(row=row, column=cruce_col_idx).value = (
+                    f'=IFERROR(VLOOKUP({aux_col_letter}{row},'
+                    f"ARCA!${arca_aux_col_letter}$7:${arca_total_col_letter}${arca_last_data_row},"
+                    f'{arca_total_col_offset},FALSE),"NO ENCONTRADO")'
+                )
+                ws.cell(row=row, column=cruce_col_idx).number_format = money_fmt
+                ws.cell(row=row, column=cruce_col_idx).alignment = center_align
+
+                # DIFF: Total - CRUCE (solo si CRUCE es numerico)
+                ws.cell(row=row, column=diff_col_idx).value = (
+                    f'=IF({cruce_col_letter}{row}="NO ENCONTRADO","",'
+                    f'{total_col_letter}{row}-{cruce_col_letter}{row})'
+                )
+                ws.cell(row=row, column=diff_col_idx).number_format = money_fmt
+                ws.cell(row=row, column=diff_col_idx).alignment = center_align
 
         _autofit(ws, total_cols)
         ws.column_dimensions['A'].width = 8 # Ancho fijo para columna Fecha
@@ -847,15 +896,15 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                 ws_ri.cell(row=curr_row, column=1).alignment = center_align
             
                 # Neto
-                if r_data['Neto_Col_M']: ws_ri.cell(row=curr_row, column=2).value = f"=Movimientos!{r_data['Neto_Col_M']}{total_row_mov}"
+                if r_data['Neto_Col_M']: ws_ri.cell(row=curr_row, column=2).value = f"={mov_sheet_name}!{r_data['Neto_Col_M']}{total_row_mov}"
                 else: ws_ri.cell(row=curr_row, column=2).value = 0.0
             
                 # IVA
-                if r_data['IVA_Col_M']: ws_ri.cell(row=curr_row, column=3).value = f"=Movimientos!{r_data['IVA_Col_M']}{total_row_mov}"
+                if r_data['IVA_Col_M']: ws_ri.cell(row=curr_row, column=3).value = f"={mov_sheet_name}!{r_data['IVA_Col_M']}{total_row_mov}"
                 else: ws_ri.cell(row=curr_row, column=3).value = 0.0
 
                 # Deducciones
-                if r_data['Ded_Col_M']: ws_ri.cell(row=curr_row, column=4).value = f"=Movimientos!{r_data['Ded_Col_M']}{total_row_mov}"
+                if r_data['Ded_Col_M']: ws_ri.cell(row=curr_row, column=4).value = f"={mov_sheet_name}!{r_data['Ded_Col_M']}{total_row_mov}"
                 else: ws_ri.cell(row=curr_row, column=4).value = 0.0
             
                 # Total
@@ -1337,7 +1386,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                     cell = ws5.cell(row=row_idx, column=col_idx)
                     cell.alignment = center_align
                     if col_idx == 7: # Total
-                        cell.value = f'=Movimientos!{total_mov_col}{orig_row}'
+                        cell.value = f'={mov_sheet_name}!{total_mov_col}{orig_row}'
                         cell.number_format = money_fmt
                     elif col_idx == 8: # Saldo Acumulado
                         # Formula unificada: IF(mismo CUIT que arriba, saldo_ant + total_actual, total_actual)
@@ -1377,13 +1426,13 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                 cell.font = header_font; cell.fill = header_fill
                 cell.alignment = header_align; cell.border = thin_border
 
-            # Identificar columnas monetarias: todas las numéricas excepto PV, Nro., CUIT, etc.
-            arca_col_list = list(df_arca.columns)
+            # Identificar columnas monetarias
+            arca_col_list_final = list(df_arca.columns)
             non_money = {'Fecha', 'Comprobante', 'PV', 'Nro.', 'Tipo Doc.', 'CUIT', 'Razon Social', 'Auxiliar'}
             arca_money_indices = []
-            for ci, cn in enumerate(arca_col_list):
+            for ci, cn in enumerate(arca_col_list_final):
                 if cn not in non_money and df_arca[cn].dtype in ('float64', 'int64', 'float32', 'int32'):
-                    arca_money_indices.append(ci + 1)  # 1-indexed
+                    arca_money_indices.append(ci + 1)
 
             for row_idx in range(7, len(df_arca) + 7):
                 for col_idx in range(1, n_arca_cols + 1):
@@ -1395,9 +1444,286 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                     for col_idx in range(1, n_arca_cols + 1):
                         ws_arca.cell(row=row_idx, column=col_idx).fill = zebra_fill
 
-            _autofit(ws_arca, n_arca_cols)
+            # ── CRUCE + DIFF en ARCA (busca en SISTEMA) ──────────────
+            if 'Auxiliar' in arca_col_list_final and 'Total' in arca_col_list_final and 'Auxiliar' in col_list:
+                arca_cruce_col_idx = n_arca_cols + 1
+                arca_diff_col_idx = n_arca_cols + 2
+                arca_cruce_letter = get_column_letter(arca_cruce_col_idx)
+                arca_diff_letter = get_column_letter(arca_diff_col_idx)
+                arca_aux_col_idx = arca_col_list_final.index('Auxiliar') + 1
+                arca_aux_letter = get_column_letter(arca_aux_col_idx)
+                arca_total_col_idx = arca_col_list_final.index('Total') + 1
+                arca_total_letter = get_column_letter(arca_total_col_idx)
+
+                # Rango de lookup en SISTEMA
+                sys_aux_letter = get_column_letter(col_list.index('Auxiliar') + 1)
+                sys_total_letter = get_column_letter(col_list.index('Total') + 1)
+                sys_total_offset = col_list.index('Total') - col_list.index('Auxiliar') + 1
+                sys_last_data_row = len(df) + 6
+
+                # Headers CRUCE
+                ws_arca.cell(row=6, column=arca_cruce_col_idx).value = 'CRUCE'
+                ws_arca.cell(row=6, column=arca_cruce_col_idx).font = header_font
+                ws_arca.cell(row=6, column=arca_cruce_col_idx).fill = PatternFill('solid', fgColor='7030A0')
+                ws_arca.cell(row=6, column=arca_cruce_col_idx).alignment = header_align
+                ws_arca.cell(row=6, column=arca_cruce_col_idx).border = thin_border
+
+                ws_arca.cell(row=6, column=arca_diff_col_idx).value = 'DIFF'
+                ws_arca.cell(row=6, column=arca_diff_col_idx).font = header_font
+                ws_arca.cell(row=6, column=arca_diff_col_idx).fill = PatternFill('solid', fgColor='7030A0')
+                ws_arca.cell(row=6, column=arca_diff_col_idx).alignment = header_align
+                ws_arca.cell(row=6, column=arca_diff_col_idx).border = thin_border
+
+                for row_idx in range(7, len(df_arca) + 7):
+                    ws_arca.cell(row=row_idx, column=arca_cruce_col_idx).value = (
+                        f'=IFERROR(VLOOKUP({arca_aux_letter}{row_idx},'
+                        f"SISTEMA!${sys_aux_letter}$7:${sys_total_letter}${sys_last_data_row},"
+                        f'{sys_total_offset},FALSE),"NO ENCONTRADO")'
+                    )
+                    ws_arca.cell(row=row_idx, column=arca_cruce_col_idx).number_format = money_fmt
+                    ws_arca.cell(row=row_idx, column=arca_cruce_col_idx).alignment = center_align
+
+                    ws_arca.cell(row=row_idx, column=arca_diff_col_idx).value = (
+                        f'=IF({arca_cruce_letter}{row_idx}="NO ENCONTRADO","",'
+                        f'{arca_total_letter}{row_idx}-{arca_cruce_letter}{row_idx})'
+                    )
+                    ws_arca.cell(row=row_idx, column=arca_diff_col_idx).number_format = money_fmt
+                    ws_arca.cell(row=row_idx, column=arca_diff_col_idx).alignment = center_align
+
+            _autofit(ws_arca, n_arca_cols + 2)
+
+            # ── Hojas de overflow: DE MAS EN SISTEMA / FALTANTES ARCA ─────
+            # Construir sets de auxiliares para comparar
+            if 'Auxiliar' in arca_col_list_final and 'Auxiliar' in col_list:
+                # Auxiliar de ARCA: valores del df
+                arca_aux_set = set(df_arca['Auxiliar'].dropna().astype(str).values)
+                # Auxiliar de SISTEMA: construir igual que la formula
+                sistema_aux_values = (
+                    df['Tipo'].astype(str) + ' ' + df['Letra'].astype(str) +
+                    df['PV'].astype(str) + df['Nro.'].astype(str) + df['CUIT'].astype(str)
+                )
+                sistema_aux_set = set(sistema_aux_values.values)
+
+                # DE MAS EN SISTEMA: filas del SISTEMA no encontradas en ARCA
+                mask_extra_sistema = ~sistema_aux_values.isin(arca_aux_set)
+                df_extra_sistema = df[mask_extra_sistema].copy()
+                if not df_extra_sistema.empty:
+                    df_extra_sistema.to_excel(writer, sheet_name='DE MAS EN SISTEMA', index=False, startrow=5)
+                    ws_extra = writer.sheets['DE MAS EN SISTEMA']
+                    n_extra_cols = len(df_extra_sistema.columns)
+                    ws_extra.merge_cells(f'A1:{get_column_letter(n_extra_cols)}1')
+                    ws_extra['A1'] = 'DE MAS EN SISTEMA'
+                    ws_extra['A1'].font = Font(bold=True, size=14, color='FFFFFF')
+                    ws_extra['A1'].fill = PatternFill('solid', fgColor='C00000')
+                    ws_extra['A1'].alignment = center_align
+                    ws_extra.merge_cells(f'A2:{get_column_letter(n_extra_cols)}2')
+                    ws_extra['A2'] = f'{len(df_extra_sistema)} comprobantes en SISTEMA no encontrados en ARCA'
+                    ws_extra['A2'].font = Font(bold=True, size=11, color='C00000')
+                    ws_extra['A2'].alignment = center_align
+                    for ci in range(1, n_extra_cols + 1):
+                        c = ws_extra.cell(row=6, column=ci)
+                        c.font = header_font; c.fill = header_fill
+                        c.alignment = header_align; c.border = thin_border
+                    _autofit(ws_extra, n_extra_cols)
+
+                # FALTANTES ARCA: filas de ARCA no encontradas en SISTEMA
+                mask_falt_arca = ~df_arca['Auxiliar'].astype(str).isin(sistema_aux_set)
+                df_falt_arca = df_arca[mask_falt_arca].copy()
+                if not df_falt_arca.empty:
+                    df_falt_arca.to_excel(writer, sheet_name='FALTANTES ARCA', index=False, startrow=5)
+                    ws_falt = writer.sheets['FALTANTES ARCA']
+                    n_falt_cols = len(df_falt_arca.columns)
+                    ws_falt.merge_cells(f'A1:{get_column_letter(n_falt_cols)}1')
+                    ws_falt['A1'] = 'FALTANTES ARCA'
+                    ws_falt['A1'].font = Font(bold=True, size=14, color='FFFFFF')
+                    ws_falt['A1'].fill = PatternFill('solid', fgColor='C00000')
+                    ws_falt['A1'].alignment = center_align
+                    ws_falt.merge_cells(f'A2:{get_column_letter(n_falt_cols)}2')
+                    ws_falt['A2'] = f'{len(df_falt_arca)} comprobantes en ARCA no encontrados en SISTEMA'
+                    ws_falt['A2'].font = Font(bold=True, size=11, color='C00000')
+                    ws_falt['A2'].alignment = center_align
+                    for ci in range(1, n_falt_cols + 1):
+                        c = ws_falt.cell(row=6, column=ci)
+                        c.font = header_font; c.fill = header_fill
+                        c.alignment = header_align; c.border = thin_border
+                    _autofit(ws_falt, n_falt_cols)
 
     print(f"\n  Excel guardado en: {output_path}")
+
+
+def generar_sifere_txt(transacciones: list[dict], meta: dict) -> str:
+    """Genera un archivo TXT con formato SIFERE para percepciones de IIBB.
+    Cada línea: CodJurisdiccion(3) + CUIT(11) + Fecha(DD/MM/YYYY) + PV(4) + Nro(8) + TipoComp(2) + Monto(11)
+    """
+    # ── Mapeo de nombre de percepción → código de jurisdicción SIFERE ──
+    CODIGOS_JURISDICCION = {
+        "PERC.IB.CAP.FED.": "901",
+        "PERC.IB.CABA C.ELECT": "901",
+        "PERC.IB.BS.AS.": "902",
+        "PER. IIBB CATAMARCA": "903",
+        "PERC.IB.CORDOBA": "904",
+        "PERC. CORRIENTES": "905",
+        "PERC. IIBB CHACO": "906",
+        "PERC IIBB CHUBUT": "907",
+        "PERCEP IB ENTRE RIOS": "908",
+        "PERC. IIBB FORMOSA": "909",
+        "PERC.IIBB JUJUY": "910",
+        "PERC.LA PAMPA": "911",
+        "PERC.IB.LA RIOJA": "912",
+        "PERC.IB.MENDOZA": "913",
+        "PERC.IB MISIONES": "914",
+        "Perc.IIBB Neuquen": "915",
+        "PERC. IB RIO NEGRO": "916",
+        "PERC.IB.SALTA": "917",
+        "PERC.IB SAN JUAN": "918",
+        "PERC. SAN LUIS": "919",
+        "PERCEP IIBB STA CRUZ": "920",
+        "PERC IIBB SANTA FE": "921",
+        "PERC IIBB SGO ESTERO": "922",
+        "PERC. TIERRA D.FUEGO": "923",
+        "PERCEP IIBB TUCUMAN": "924",
+    }
+
+    # ── Mapeo de tipo de comprobante para SIFERE ──
+    TIPO_COMP_SIFERE = {
+        "FC": "FA",
+        "ND": "DA",
+        "NC": "CA",
+        "TF": "FA",
+        "TK": "FA",
+    }
+
+    # ── Tasas IVA (para excluirlas de percepciones) ──
+    IVA_RATES = {
+        'Tasa 21%', 'T.21%', 'C.F.21%', 'Tasa 27%', 'T.27%',
+        'Tasa 10.5%', 'Tasa 10,5%', 'T.10.5%', 'T.10,5%',
+        'C.F.10.5%', 'C.F.10,5%', 'Tasa 5%', 'T.5%',
+        'Tasa 2.5%', 'Tasa 2,5%', 'T.2.5%', 'T.2,5%',
+        'T.IMP 21%', 'T.IMP 10%', 'Exento',
+        'R.Monot21', 'R.Mont.10',
+    }
+
+    # ── Extraer periodo (mes/año) del meta ──
+    periodo_str = meta.get('periodo', '')
+    # El periodo viene como "Desde el 01/MM/YYYY hasta el DD/MM/YYYY"
+    p_match = re.search(r'(\d{2})/(\d{4})', periodo_str)
+    if p_match:
+        mes_periodo = p_match.group(1)
+        anio_periodo = p_match.group(2)
+    else:
+        # Fallback: intentar extraer de otra forma
+        nums = re.findall(r'\d+', periodo_str)
+        if len(nums) >= 5:
+            # Formato DD/MM/YYYY → posiciones 1=mes, 2=año
+            mes_periodo = nums[1]
+            anio_periodo = nums[2]
+        else:
+            mes_periodo = "01"
+            anio_periodo = "2025"
+
+    # ── Recopilar percepciones IIBB de cada transacción ──
+    lineas_txt = []
+
+    for t in transacciones:
+        # Datos base de la transacción
+        dia = t['Fecha']
+        tipo = t['Tipo']
+        numero_raw = t['Numero']
+        cuit_raw = t['CUIT'].replace('-', '') if t['CUIT'] else ''
+
+        # Separar PV y Nro del número de comprobante
+        if '-' in numero_raw:
+            pv_str = numero_raw.split('-')[0]
+            resto_num = numero_raw.split('-')[1]
+        else:
+            pv_str = numero_raw[:5]
+            resto_num = numero_raw[5:]
+
+        # Quitar letra del final si existe
+        letra = resto_num[-1] if resto_num and resto_num[-1].isalpha() else ''
+        nro_str = resto_num[:-1] if letra else resto_num
+
+        # Formatear fecha completa
+        fecha_completa = f"{int(dia):02d}/{mes_periodo}/{anio_periodo}"
+
+        # Formatear PV y Nro
+        pv_formateado = pv_str[-4:].zfill(4)
+        nro_formateado = nro_str.zfill(8)
+
+        # Tipo de comprobante SIFERE
+        tipo_sifere = TIPO_COMP_SIFERE.get(tipo, tipo)
+
+        # Comprobante = PV + Nro + Tipo
+        comprobante_sifere = f"{pv_formateado}{nro_formateado}{tipo_sifere}"
+
+        # ── Recopilar percepciones de esta transacción ──
+        percepciones = {}  # nombre_percepcion -> monto
+
+        # Desde la tasa principal (si no es IVA)
+        tasa = t['Tasa']
+        if tasa and tasa not in IVA_RATES:
+            nombre_upper = tasa.upper()
+            if "PERC" in nombre_upper and "ADUA" not in nombre_upper and \
+               "I.V.A" not in nombre_upper and "GCIAS" not in nombre_upper and \
+               "IVA" not in nombre_upper:
+                percepciones[tasa] = percepciones.get(tasa, 0.0) + t['Neto']
+
+        # Desde sub-conceptos
+        for s in t['SubConceptos']:
+            nombre = s['Concepto']
+            if not nombre or nombre in IVA_RATES:
+                continue
+            nombre_upper = nombre.upper()
+            if "PERC" in nombre_upper and "ADUA" not in nombre_upper and \
+               "I.V.A" not in nombre_upper and "GCIAS" not in nombre_upper and \
+               "IVA" not in nombre_upper:
+                monto = s['Neto'] if s['Neto'] != 0.0 else s['Percepcion']
+                percepciones[nombre] = percepciones.get(nombre, 0.0) + monto
+
+        # ── Generar líneas TXT para cada percepción ──
+        for nombre_perc, monto in percepciones.items():
+            if monto == 0.0:
+                continue
+
+            # Buscar código de jurisdicción
+            codigo = CODIGOS_JURISDICCION.get(nombre_perc, None)
+            if codigo is None:
+                # Intento fuzzy: buscar por contenido parcial
+                for key, val in CODIGOS_JURISDICCION.items():
+                    if key.upper() in nombre_perc.upper() or nombre_perc.upper() in key.upper():
+                        codigo = val
+                        break
+                if codigo is None:
+                    continue  # No se encontró jurisdicción, saltar
+
+            # Invertir signo para NC (el extractor ya invierte, pero el formato
+            # SIFERE espera el monto con signo negativo explícito para CA)
+            # En nuestro extractor, NC ya tienen montos negativos en los SubConceptos NO,
+            # la inversión se hace en crear_excel. Aquí trabajamos con datos crudos.
+            monto_final = monto
+            es_nc = (tipo == 'NC')
+
+            # Formatear monto
+            valor_abs = abs(monto_final)
+            parte_entera = int(valor_abs)
+            parte_decimal = f"{valor_abs:.2f}".split('.')[1]
+
+            if es_nc:
+                monto_formateado = f"-{parte_entera:07d},{parte_decimal}"
+            else:
+                monto_formateado = f"{parte_entera:08d},{parte_decimal}"
+
+            # Construir línea
+            linea = (
+                f"{codigo}"
+                f"{cuit_raw}"
+                f"{fecha_completa}"
+                f"{comprobante_sifere}"
+                f"{monto_formateado}"
+            )
+            lineas_txt.append(linea)
+
+    return "\n".join(lineas_txt)
 
 
 def seleccionar_archivo() -> Path:

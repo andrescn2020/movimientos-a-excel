@@ -1,9 +1,13 @@
 import streamlit as st
 import io
+import re
 import zipfile
 import pandas as pd
+import PyPDF2
 from pathlib import Path
-from extractor_movimientos import parsear_archivo, crear_excel
+from openpyxl.styles import Border, Side, Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+from extractor_movimientos import parsear_archivo, crear_excel, generar_sifere_txt
 
 # --- Page Config ---
 st.set_page_config(
@@ -368,15 +372,18 @@ st.markdown("""
 # ─── Selector de herramienta ────────────────────────────────────────────────────────────
 TOOL_MOVIMIENTOS = "Extracción de Movimientos (.txt)"
 TOOL_PORTAL_IVA = "Movimientos Portal IVA limpio (.zip)"
+TOOL_SIFERE = "Archivos SIFERE (.txt)"
+TOOL_LIQUIDACIONES = "Liquidaciones Tarjeta (.pdf)"
 
 herramienta = st.selectbox(
     "Seleccioná la herramienta:",
-    options=[TOOL_MOVIMIENTOS, TOOL_PORTAL_IVA],
+    options=[TOOL_MOVIMIENTOS, TOOL_PORTAL_IVA, TOOL_SIFERE, TOOL_LIQUIDACIONES],
     index=0,
 )
 
-with st.expander("📋 Códigos de comprobantes ARCA"):
-    st.markdown("""
+if herramienta in (TOOL_MOVIMIENTOS, TOOL_PORTAL_IVA):
+    with st.expander("📋 Códigos de comprobantes ARCA"):
+        st.markdown("""
 | Código | Tipo | Código | Tipo | Código | Tipo |
 |--------|------|--------|------|--------|------|
 | 1 | FC A | 2 | ND A | 3 | NC A |
@@ -399,7 +406,7 @@ with st.expander("📋 Códigos de comprobantes ARCA"):
 | 120 | TK M | | | | |
 
 **FC** = Factura · **NC** = Nota de Crédito · **ND** = Nota de Débito · **TF** = Tique Factura · **TK** = Tique
-    """)
+        """)
 
 if herramienta == TOOL_MOVIMIENTOS:
         # ─── Card 01: Archivo ──────────────────────────────────────────────────────────
@@ -417,7 +424,7 @@ if herramienta == TOOL_MOVIMIENTOS:
         OPT_SOLO = "Solo Movimientos"
         OPT_AUXILIAR = "Exportar con columna Auxiliar"
         OPT_RESUMENES = "Incluir hojas de resumen"
-        OPT_ARCA = "Cruce de comprobantes con ARCA (En desarrollo)"
+        OPT_ARCA = "Cruce de comprobantes con ARCA"
 
         modo_export = st.radio(
             "Seleccioná el modo de exportación:",
@@ -678,7 +685,7 @@ if herramienta == TOOL_MOVIMIENTOS:
             """, unsafe_allow_html=True)
 
 
-else:
+elif herramienta == TOOL_PORTAL_IVA:
     # ───────────────────────────────────────────────────────────────────────────────
     # HERRAMIENTA: Portal IVA limpio
     # ───────────────────────────────────────────────────────────────────────────────
@@ -982,3 +989,537 @@ else:
             ESPERANDO ARCHIVO .ZIP · PASO 01
         </div>
         """, unsafe_allow_html=True)
+
+
+elif herramienta == TOOL_SIFERE:
+    # ───────────────────────────────────────────────────────────────────────────────
+    # HERRAMIENTA: Archivos SIFERE (TXT)
+    # ───────────────────────────────────────────────────────────────────────────────
+    st.markdown('<div class="card"><div class="card-label">01 · Archivo fuente para SIFERE</div>', unsafe_allow_html=True)
+    uploaded_sifere = st.file_uploader(
+        "Arrastrá tu archivo de movimientos o hacé click para seleccionarlo",
+        type=["txt", "prn"],
+        label_visibility="visible",
+        key="sifere_file"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if uploaded_sifere:
+        sifere_filename = Path(uploaded_sifere.name).stem
+        st.success(f"**{uploaded_sifere.name}** listo para procesar")
+
+        st.markdown('<div class="card"><div class="card-label">02 · Generar TXT SIFERE</div>', unsafe_allow_html=True)
+
+        if st.button("⬡  Generar archivo SIFERE"):
+            try:
+                with st.spinner("Procesando..."):
+                    raw_bytes = uploaded_sifere.getvalue()
+                    resultado = parsear_archivo(raw_bytes)
+                    movimientos = resultado["movimientos"]
+                    metadata = resultado["metadata"]
+
+                    txt_sifere = generar_sifere_txt(movimientos, metadata)
+
+                st.success("✓  Archivo SIFERE generado con éxito")
+
+                # Stats
+                st.markdown(f"""
+                <div class="stats-row">
+                    <div class="stat-chip">
+                        <span class="stat-val">{len(movimientos)}</span>
+                        <span class="stat-lbl">Movimientos</span>
+                    </div>
+                    <div class="stat-chip">
+                        <span class="stat-val">{len(txt_sifere.splitlines())}</span>
+                        <span class="stat-lbl">Líneas TXT</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.download_button(
+                    label="↓  Descargar TXT SIFERE",
+                    data=txt_sifere.encode("latin-1", errors="replace"),
+                    file_name=f"{sifere_filename}_sifere.txt",
+                    mime="text/plain",
+                    use_container_width=True,
+                )
+
+            except Exception as e:
+                st.error(f"Error al procesar el archivo: {str(e)}")
+                st.exception(e)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    else:
+        st.markdown("""
+        <div style="
+            text-align: center;
+            padding: 2rem 1rem;
+            font-family: 'Space Mono', monospace;
+            font-size: 0.72rem;
+            color: #6b7280;
+            letter-spacing: 0.12em;
+        ">
+            ESPERANDO ARCHIVO · PASO 01
+        </div>
+        """, unsafe_allow_html=True)
+
+
+else:
+    # ───────────────────────────────────────────────────────────────────────────────
+    # HERRAMIENTA: Liquidaciones Tarjeta (PDF)
+    # ───────────────────────────────────────────────────────────────────────────────
+    st.markdown('<div class="card"><div class="card-label">01 · Archivo PDF de Liquidaciones</div>', unsafe_allow_html=True)
+    uploaded_liq = st.file_uploader(
+        "Arrastrá tu PDF de liquidaciones o hacé click para seleccionarlo",
+        type=["pdf"],
+        label_visibility="visible",
+        key="liquidaciones_pdf"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if uploaded_liq:
+        liq_filename = Path(uploaded_liq.name).stem
+        st.success(f"**{uploaded_liq.name}** listo para procesar")
+
+        # ─── Card 02: Datos del contribuyente ──────────────────────────────────────
+        st.markdown('<div class="card"><div class="card-label">02 · Datos del contribuyente</div>', unsafe_allow_html=True)
+        col_a, col_b = st.columns(2)
+        with col_a:
+            nombre_contribuyente = st.text_input(
+                "Nombre del contribuyente",
+                value="",
+                placeholder="Ej: Juan Pérez",
+                key="liq_contribuyente"
+            )
+        with col_b:
+            tipo_tarjeta = st.selectbox(
+                "Tipo de tarjeta / Entidad",
+                options=["Visa Crédito", "Visa Débito", "Mastercard Crédito", "Mastercard Débito",
+                         "American Express Crédito", "American Express Débito",
+                         "Maestro Crédito", "Maestro Débito",
+                         "Cabal Crédito", "Cabal Débito", "Naranja",
+                         "First Data", "Otra"],
+                index=0,
+                key="liq_tarjeta"
+            )
+        # Si selecciona "Otra", mostrar text input
+        if tipo_tarjeta == "Otra":
+            tipo_tarjeta_custom = st.text_input(
+                "Especificá el tipo de tarjeta / entidad",
+                value="",
+                placeholder="Ej: Mercado Pago",
+                key="liq_tarjeta_custom"
+            )
+            tipo_tarjeta_final = tipo_tarjeta_custom.strip() if tipo_tarjeta_custom.strip() else "Otra"
+        else:
+            tipo_tarjeta_final = tipo_tarjeta
+
+        periodo_liq = st.text_input(
+            "Periodo (MM/AAAA)",
+            value="",
+            placeholder="Ej: 04/2025",
+            key="liq_periodo"
+        )
+        if periodo_liq and not re.match(r'^(0[1-9]|1[0-2])/\d{4}$', periodo_liq):
+            st.error("El periodo debe tener formato MM/AAAA (ej: 04/2025)")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ─── Card 03: Procesar ─────────────────────────────────────────────────────
+        st.markdown('<div class="card"><div class="card-label">03 · Generar Excel de Liquidaciones</div>', unsafe_allow_html=True)
+
+        btn_procesar = st.button("⬡  Procesar Liquidaciones")
+
+        # ─── Botón Procesar ────────────────────────────────────────────────────────
+        if btn_procesar:
+            if not nombre_contribuyente.strip():
+                st.warning("Ingresá el nombre del contribuyente antes de procesar.")
+            elif not periodo_liq.strip():
+                st.warning("Ingresá el periodo (MM/AAAA) antes de procesar.")
+            else:
+                try:
+                    # Parsear periodo para el encabezado (MM/AAAA -> AAMM)
+                    periodo_parts = periodo_liq.strip().split("/")
+                    if len(periodo_parts) == 2:
+                        mes_liq = periodo_parts[0].zfill(2)
+                        anio_liq = periodo_parts[1]
+                        periodo_codigo = anio_liq[2:] + mes_liq  # AAMM
+                    else:
+                        mes_liq = "01"
+                        anio_liq = "2025"
+                        periodo_codigo = "2501"
+
+                    with st.spinner("Leyendo PDF..."):
+                        reader = PyPDF2.PdfReader(io.BytesIO(uploaded_liq.getvalue()))
+                        texto = "".join(page.extract_text() + "\n" for page in reader.pages)
+                        texto_lines = texto.splitlines()
+
+                    with st.spinner("Extrayendo movimientos..."):
+                        capturar = False
+                        movimientos = []
+                        movimiento = {}
+                        # Extraer nombre del banco de la segunda línea del PDF
+                        banco = texto_lines[1] if len(texto_lines) > 1 else "Banco desconocido"
+
+                        for linea in texto_lines:
+                            if "F.de Pago" in linea:
+                                capturar = False
+                                cbu_match = re.search(r"\d{1,3}(\.\d{3})*,\d+\-?\s+(\d+)", linea)
+                                nro_cbu = cbu_match.group(1) if cbu_match else "No se encontró Número de Liquidación"
+                                fecha_match = re.search(r"(\d{2}/\d{2}/\d{4})", linea.split("Nro. Liq:")[1]) if "Liq:" in linea else None
+                                if cbu_match:
+                                    movimiento["Liquidacion"] = cbu_match.group(2) + ".00"
+                                fecha_liq = fecha_match.group(1) if fecha_match else "No se encontró fecha"
+                                movimiento["Fecha"] = fecha_liq
+                                if nro_cbu != "No se encontró Número de Liquidación":
+                                    movimiento["Liquidacion"] = round(float(movimiento["Liquidacion"]))
+                                    movimientos.append(movimiento.copy())
+                                    movimiento = {}
+
+                            if "VENTAS" in linea or "QR" in linea or "AJUSTE" in linea:
+                                capturar = True
+
+                            if capturar:
+                                partes = linea.split("$")
+                                if len(partes) > 1:
+                                    valor = partes[1].strip().replace("Fecha", "").replace("-", "").replace(".", "").replace(",", ".")
+                                    if "/" not in valor:
+                                        try:
+                                            valor = round(float(valor), 2) * (-1 if "-" in partes[1] else 1)
+                                            partes[1] = valor
+                                        except ValueError:
+                                            continue
+                                    movimiento[partes[0]] = partes[1]
+
+                    if not movimientos:
+                        st.error("No se encontraron liquidaciones en el PDF. Verificá el formato del archivo.")
+                    else:
+                        with st.spinner("Generando Excel..."):
+                            df_total = pd.DataFrame(movimientos).fillna(0)
+                            columnas_qr = [col for col in df_total.columns if col.startswith("QR")]
+                            df_qr = df_total[df_total[columnas_qr].sum(axis=1) != 0][["Fecha", "Liquidacion"] + columnas_qr] if columnas_qr else None
+                            columnas_ajuste = [col for col in df_total.columns if "AJUSTE" in col]
+                            df_ajuste = df_total[df_total[columnas_ajuste].sum(axis=1) != 0][["Fecha", "Liquidacion"] + columnas_ajuste] if columnas_ajuste else None
+
+                            df_movimientos = df_total.drop(columns=columnas_qr + columnas_ajuste)
+                            columnas_importe_neto = [col for col in df_movimientos.columns if "IMPORTE NETO" in col]
+                            columnas_ventas = [col for col in df_movimientos.columns if col.startswith("VENTAS")]
+                            columnas_restantes = [col for col in df_movimientos.columns if col not in columnas_importe_neto + columnas_ventas + ["Fecha", "Liquidacion"]]
+                            df_movimientos = df_movimientos[["Fecha", "Liquidacion"] + columnas_restantes + columnas_importe_neto + columnas_ventas]
+
+                            # Obtener primer numero de liquidacion
+                            primer_liq = str(int(df_movimientos["Liquidacion"].iloc[0])) if len(df_movimientos) > 0 else "0"
+                            encabezado_fc = f"FC {periodo_codigo}-{primer_liq}/A"
+
+                            # CUIT First Data (hardcoded, no aparece en extractos)
+                            CUIT_FIRST_DATA = "30-52221156-3"
+
+                            output = io.BytesIO()
+                            border = Border(
+                                left=Side(border_style="thin"), right=Side(border_style="thin"),
+                                top=Side(border_style="thin"), bottom=Side(border_style="thin")
+                            )
+                            money_fmt = '_($* #,##0.00_);_($* (#,##0.00);_($* "-"??_);_(@_)'
+                            # Colores VERDES
+                            header_fill = PatternFill('solid', fgColor='2E7D32')
+                            zebra_fill = PatternFill('solid', fgColor='C8E6C9')
+                            header_font_white = Font(bold=True, size=11, color='FFFFFF')
+                            center_align = Alignment(horizontal='center', vertical='center')
+
+                            def formatear_hoja_liq(ws, df_hoja, columnas_ignorar, titulo_encabezado=None, nombre_entidad="", mostrar_resumen=True):
+                                n_cols = len(df_hoja.columns)
+
+                                # Encabezado: filas de titulo
+                                if titulo_encabezado:
+                                    ws.insert_rows(1, 6)  # 5 filas de encabezado + 1 en blanco
+                                    last_col = get_column_letter(n_cols)
+
+                                    # Fila 1: LIQUIDACION DE TARJETA: (tarjeta)
+                                    ws.merge_cells(f'A1:{last_col}1')
+                                    ws['A1'] = f"LIQUIDACION DE TARJETA: {tipo_tarjeta_final.upper()}"
+                                    ws['A1'].font = Font(bold=True, size=14, color='FFFFFF')
+                                    ws['A1'].fill = header_fill
+                                    ws['A1'].alignment = center_align
+
+                                    # Fila 2: Contribuyente
+                                    ws.merge_cells(f'A2:{last_col}2')
+                                    ws['A2'] = nombre_contribuyente.upper()
+                                    ws['A2'].font = Font(bold=True, size=11, color='2E7D32')
+                                    ws['A2'].alignment = center_align
+
+                                    # Fila 3: Comprobante (AAMM-NroLiq/A)
+                                    ws.merge_cells(f'A3:{last_col}3')
+                                    ws['A3'] = titulo_encabezado
+                                    ws['A3'].font = Font(bold=True, size=11, color='2E7D32')
+                                    ws['A3'].alignment = center_align
+
+                                    # Fila 4: Entidad bancaria
+                                    ws.merge_cells(f'A4:{last_col}4')
+                                    entidad_display = nombre_entidad if nombre_entidad else banco
+                                    ws['A4'] = entidad_display
+                                    ws['A4'].font = Font(italic=True, size=10, color='388E3C')
+                                    ws['A4'].alignment = center_align
+
+                                    # Fila 5: Periodo
+                                    ws.merge_cells(f'A5:{last_col}5')
+                                    ws['A5'] = f"PERIODO: {periodo_liq.strip()}"
+                                    ws['A5'].font = Font(italic=True, size=10, color='388E3C')
+                                    ws['A5'].alignment = center_align
+
+                                    # Fila 6: en blanco (separador)
+                                    data_header_row = 7
+                                    data_start_row = 8
+                                else:
+                                    data_header_row = 1
+                                    data_start_row = 2
+
+                                # Estilo de encabezados de columna
+                                for col_idx in range(1, n_cols + 1):
+                                    cell = ws.cell(row=data_header_row, column=col_idx)
+                                    cell.font = header_font_white
+                                    cell.fill = header_fill
+                                    cell.alignment = center_align
+                                    cell.border = border
+
+                                # Estilo de datos
+                                last_data_row = data_start_row + len(df_hoja) - 1
+                                for row_idx in range(data_start_row, last_data_row + 1):
+                                    for col_idx in range(1, n_cols + 1):
+                                        cell = ws.cell(row=row_idx, column=col_idx)
+                                        cell.border = border
+                                        cell.alignment = center_align
+                                        if cell.column_letter not in columnas_ignorar:
+                                            if isinstance(cell.value, (int, float)):
+                                                cell.number_format = money_fmt
+                                    # Zebra verde
+                                    if (row_idx - data_start_row) % 2 == 0:
+                                        for col_idx in range(1, n_cols + 1):
+                                            ws.cell(row=row_idx, column=col_idx).fill = zebra_fill
+
+                                # Fila TOTAL
+                                total_row = last_data_row + 1
+                                ws.merge_cells(f'A{total_row}:B{total_row}')
+                                ws[f'A{total_row}'] = "TOTAL"
+                                ws[f'A{total_row}'].font = Font(bold=True, size=11, color='FFFFFF')
+                                ws[f'A{total_row}'].fill = header_fill
+                                ws[f'A{total_row}'].alignment = center_align
+                                ws[f'A{total_row}'].border = border
+                                ws.cell(row=total_row, column=2).border = border
+                                ws.cell(row=total_row, column=2).fill = header_fill
+
+                                for col_idx in range(3, n_cols + 1):
+                                    cell = ws.cell(row=total_row, column=col_idx)
+                                    col_letter = get_column_letter(col_idx)
+                                    cell.value = f"=SUM({col_letter}{data_start_row}:{col_letter}{last_data_row})"
+                                    cell.number_format = money_fmt
+                                    cell.font = Font(bold=True, size=10, color='FFFFFF')
+                                    cell.fill = header_fill
+                                    cell.alignment = center_align
+                                    cell.border = border
+
+                                # Auto-ajustar columnas
+                                for col_idx in range(1, n_cols + 1):
+                                    col_letter = get_column_letter(col_idx)
+                                    max_len = max(
+                                        len(str(ws.cell(row=r, column=col_idx).value or ''))
+                                        for r in range(data_header_row, min(total_row + 1, data_header_row + 50))
+                                    )
+                                    ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+
+                                # ─── CARGO TERMINAL highlight (siempre) ───────────────────
+                                cols_hoja = list(df_hoja.columns)
+                                cargo_terminal_cols = []
+                                for i, col in enumerate(cols_hoja):
+                                    if "CARGO TERMINAL" in col.upper():
+                                        cargo_terminal_cols.append((i + 1, get_column_letter(i + 1)))
+                                yellow_fill = PatternFill('solid', fgColor='FFD600')
+                                for col_idx_ct, col_letter_ct in cargo_terminal_cols:
+                                    hdr_cell = ws.cell(row=data_header_row, column=col_idx_ct)
+                                    hdr_cell.fill = PatternFill('solid', fgColor='FF6F00')
+                                    hdr_cell.font = Font(bold=True, size=11, color='FFFFFF')
+                                    from openpyxl.comments import Comment
+                                    hdr_cell.comment = Comment("ATENCION: Cargo terminal detectado", "Sistema")
+                                    for row_idx in range(data_start_row, total_row + 1):
+                                        ws.cell(row=row_idx, column=col_idx_ct).fill = yellow_fill
+
+                                # ─── Tabla resumen de impuestos (solo Liquidaciones) ──────
+                                if mostrar_resumen:
+                                    iva21_col_letters = []
+                                    iva105_col_letters = []
+                                    perc_iva_col_letters = []
+                                    perc_iibb_col_letters = []
+                                    sirtac_col_letters = []
+
+                                    for i, col in enumerate(cols_hoja):
+                                        col_upper = col.upper()
+                                        col_letter = get_column_letter(i + 1)
+                                        if "IVA" in col_upper and not col_upper.startswith("PER"):
+                                            if "IVA RI" in col_upper or ("10,50" not in col and "10.50" not in col):
+                                                iva21_col_letters.append(col_letter)
+                                            else:
+                                                iva105_col_letters.append(col_letter)
+                                        if col_upper.startswith("PER") and "IVA" in col_upper:
+                                            perc_iva_col_letters.append(col_letter)
+                                        elif col_upper.startswith("PER") and "IVA" not in col_upper:
+                                            perc_iibb_col_letters.append(col_letter)
+                                        if "SIRTAC" in col_upper:
+                                            sirtac_col_letters.append(col_letter)
+
+                                    resumen_items = []
+                                    tr = total_row
+
+                                    if iva21_col_letters:
+                                        if len(iva21_col_letters) == 1:
+                                            iva_ref = f"{iva21_col_letters[0]}{tr}"
+                                        else:
+                                            iva_ref = "+".join(f"{cl}{tr}" for cl in iva21_col_letters)
+                                        resumen_items.append(("NETO 21", f"=ABS({iva_ref})/0.21"))
+                                        resumen_items.append(("IVA 21", f"=ABS({iva_ref})"))
+
+                                    if iva105_col_letters:
+                                        if len(iva105_col_letters) == 1:
+                                            iva105_ref = f"{iva105_col_letters[0]}{tr}"
+                                        else:
+                                            iva105_ref = "+".join(f"{cl}{tr}" for cl in iva105_col_letters)
+                                        resumen_items.append(("NETO 10.5", f"=ABS({iva105_ref})/0.105"))
+                                        resumen_items.append(("IVA 10.5", f"=ABS({iva105_ref})"))
+
+                                    if perc_iva_col_letters:
+                                        if len(perc_iva_col_letters) == 1:
+                                            p_ref = f"{perc_iva_col_letters[0]}{tr}"
+                                        else:
+                                            p_ref = "+".join(f"{cl}{tr}" for cl in perc_iva_col_letters)
+                                        resumen_items.append(("PERC. IVA", f"=ABS({p_ref})"))
+
+                                    if sirtac_col_letters:
+                                        if len(sirtac_col_letters) == 1:
+                                            s_ref = f"{sirtac_col_letters[0]}{tr}"
+                                        else:
+                                            s_ref = "+".join(f"{cl}{tr}" for cl in sirtac_col_letters)
+                                        resumen_items.append(("SIRTAC", f"=ABS({s_ref})"))
+
+                                    if perc_iibb_col_letters:
+                                        if len(perc_iibb_col_letters) == 1:
+                                            pi_ref = f"{perc_iibb_col_letters[0]}{tr}"
+                                        else:
+                                            pi_ref = "+".join(f"{cl}{tr}" for cl in perc_iibb_col_letters)
+                                        resumen_items.append(("PERC. IIBB", f"=ABS({pi_ref})"))
+
+                                    if resumen_items:
+                                        resumen_start = total_row + 2
+                                        ws.merge_cells(f'A{resumen_start}:C{resumen_start}')
+                                        ws[f'A{resumen_start}'] = "RESUMEN IMPOSITIVO"
+                                        ws[f'A{resumen_start}'].font = Font(bold=True, size=11, color='FFFFFF')
+                                        ws[f'A{resumen_start}'].fill = header_fill
+                                        ws[f'A{resumen_start}'].alignment = center_align
+                                        ws[f'A{resumen_start}'].border = border
+
+                                        for idx, (concepto, formula) in enumerate(resumen_items):
+                                            r = resumen_start + 1 + idx
+                                            ws.merge_cells(f'A{r}:B{r}')
+                                            ws[f'A{r}'] = concepto
+                                            ws[f'A{r}'].font = Font(bold=True, size=10)
+                                            ws[f'A{r}'].alignment = center_align
+                                            ws[f'A{r}'].border = border
+                                            ws.cell(row=r, column=2).border = border
+                                            cell_val = ws.cell(row=r, column=3)
+                                            cell_val.value = formula
+                                            cell_val.number_format = money_fmt
+                                            cell_val.alignment = center_align
+                                            cell_val.border = border
+                                            if idx % 2 == 0:
+                                                ws[f'A{r}'].fill = zebra_fill
+                                                ws.cell(row=r, column=2).fill = zebra_fill
+                                                cell_val.fill = zebra_fill
+
+                                        # Fila TOTAL del resumen
+                                        r_total = resumen_start + 1 + len(resumen_items)
+                                        first_val_row = resumen_start + 1
+                                        last_val_row = r_total - 1
+                                        ws.merge_cells(f'A{r_total}:B{r_total}')
+                                        ws[f'A{r_total}'] = "TOTAL"
+                                        ws[f'A{r_total}'].font = Font(bold=True, size=11, color='FFFFFF')
+                                        ws[f'A{r_total}'].fill = header_fill
+                                        ws[f'A{r_total}'].alignment = center_align
+                                        ws[f'A{r_total}'].border = border
+                                        ws.cell(row=r_total, column=2).fill = header_fill
+                                        ws.cell(row=r_total, column=2).border = border
+                                        cell_total = ws.cell(row=r_total, column=3)
+                                        cell_total.value = f"=SUM(C{first_val_row}:C{last_val_row})"
+                                        cell_total.number_format = money_fmt
+                                        cell_total.font = Font(bold=True, size=10, color='FFFFFF')
+                                        cell_total.fill = header_fill
+                                        cell_total.alignment = center_align
+                                        cell_total.border = border
+
+                            with pd.ExcelWriter(output, engine="openpyxl") as writer:
+                                df_movimientos.to_excel(writer, sheet_name="Liquidaciones", index=False)
+                                if df_qr is not None:
+                                    df_qr.to_excel(writer, sheet_name="QR", index=False)
+                                if df_ajuste is not None:
+                                    df_ajuste.to_excel(writer, sheet_name="AJUSTE", index=False)
+
+                                # Formatear hojas
+                                wb = writer.book
+                                formatear_hoja_liq(wb["Liquidaciones"], df_movimientos, ["A", "B"], encabezado_fc, banco, mostrar_resumen=True)
+                                if df_qr is not None:
+                                    formatear_hoja_liq(wb["QR"], df_qr, ["A", "B"], encabezado_fc, "First Data", mostrar_resumen=False)
+                                if df_ajuste is not None:
+                                    formatear_hoja_liq(wb["AJUSTE"], df_ajuste, ["A", "B"], encabezado_fc, banco, mostrar_resumen=False)
+
+                            output.seek(0)
+
+                        st.success("✓  Liquidaciones procesadas con éxito")
+
+                        # Stats
+                        st.markdown(f"""
+                        <div class="stats-row">
+                            <div class="stat-chip">
+                                <span class="stat-val">{len(movimientos)}</span>
+                                <span class="stat-lbl">Liquidaciones</span>
+                            </div>
+                            <div class="stat-chip">
+                                <span class="stat-val">{len(columnas_qr)}</span>
+                                <span class="stat-lbl">Cols. QR</span>
+                            </div>
+                            <div class="stat-chip">
+                                <span class="stat-val">{len(columnas_ajuste)}</span>
+                                <span class="stat-lbl">Cols. Ajuste</span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                        st.info(
+                            f"**{nombre_contribuyente}** · {tipo_tarjeta_final} · "
+                            f"**{encabezado_fc}** · {banco} · "
+                            f"{len(reader.pages)} páginas"
+                        )
+
+                        st.download_button(
+                            label="↓  Descargar Excel de Liquidaciones",
+                            data=output,
+                            file_name=f"{liq_filename}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                        )
+
+                except Exception as e:
+                    st.error(f"Error al procesar el archivo: {str(e)}")
+                    st.exception(e)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    else:
+        st.markdown("""
+        <div style="
+            text-align: center;
+            padding: 2rem 1rem;
+            font-family: 'Space Mono', monospace;
+            font-size: 0.72rem;
+            color: #6b7280;
+            letter-spacing: 0.12em;
+        ">
+            ESPERANDO ARCHIVO PDF · PASO 01
+        </div>
+        """, unsafe_allow_html=True)
+
