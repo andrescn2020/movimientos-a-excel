@@ -11,7 +11,7 @@ from extractor_movimientos import parsear_archivo, crear_excel, generar_sifere_t
 
 # --- Page Config ---
 st.set_page_config(
-    page_title="Comprobantes a Excel",
+    page_title="ADDISYC ETL",
     page_icon="📗",
     layout="centered"
 )
@@ -362,7 +362,7 @@ li[role="option"][aria-selected="true"] {
 # ─── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div>
-    <h1 class="etl-title">Transformación<span> TXT</span></h1>
+    <h1 class="etl-title">Transformación<span> Datos Mendez</span></h1>
     <p class="etl-subtitle">TXT  →  XLSX</p>
 </div>
 <hr class="divider">
@@ -656,10 +656,11 @@ if herramienta == TOOL_MOVIMIENTOS:
                             f"{meta.get('periodo', '')}"
                         )
 
+                        excel_filename = "Cruce Compras.xlsx" if cruce_arca else f"{filename}_procesado.xlsx"
                         st.download_button(
                             label="↓  Descargar Excel",
                             data=output,
-                            file_name=f"{filename}_procesado.xlsx",
+                            file_name=excel_filename,
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             use_container_width=True,
                         )

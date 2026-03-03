@@ -546,6 +546,8 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
         
         zebra_fill = PatternFill('solid', fgColor='D6E4F0')
         money_fmt = '$#,##0.00'
+        # Formato contabilidad Peso para cruce ARCA
+        accounting_fmt = '_-"$"* #,##0.00_-;-"$"* #,##0.00_-;_-"$"* "-"??_-;_-@_-'
 
         # ── Hoja Movimientos / SISTEMA ──────────────────────────────────
         # startrow=5 significa que los encabezados del DataFrame van en la fila 6
@@ -601,6 +603,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
 
         money_col_names = IVA_COL_ORDER + other_cols + ['Total']
         money_col_indices = [col_list.index(c) + 1 for c in money_col_names if c in col_list]
+        active_money_fmt = accounting_fmt if cruce_arca else money_fmt
         cuit_col_idx = (col_list.index('CUIT') + 1) if 'CUIT' in col_list else None
 
         first_sum_col = get_column_letter(col_list.index(IVA_COL_ORDER[0]) + 1)
@@ -613,11 +616,11 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                 cell = ws.cell(row=row, column=col_idx)
                 cell.alignment = center_align
                 if col_idx in money_col_indices:
-                    cell.number_format = money_fmt
+                    cell.number_format = active_money_fmt
 
             # Formula SUM
             ws.cell(row=row, column=total_col_idx).value = f'=SUM({first_sum_col}{row}:{last_sum_col}{row})'
-            ws.cell(row=row, column=total_col_idx).number_format = money_fmt
+            ws.cell(row=row, column=total_col_idx).number_format = active_money_fmt
 
             # Estilo Zebra (reusando el objeto fill)
             if (row - data_start_row) % 2 == 0:
@@ -639,7 +642,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
             cell.value = f'=SUM({col_l}{data_start_row}:{col_l}{total_row_mov-1})'
             cell.font = Font(bold=True)
             cell.border = Border(top=Side(style='double'))
-            cell.number_format = money_fmt
+            cell.number_format = active_money_fmt
             cell.alignment = center_align
 
         # ── Formulas Auxiliar (interactivas) ───────────────────
@@ -1439,7 +1442,7 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                     cell = ws_arca.cell(row=row_idx, column=col_idx)
                     cell.alignment = center_align
                     if col_idx in arca_money_indices:
-                        cell.number_format = money_fmt
+                        cell.number_format = accounting_fmt
                 if (row_idx - 7) % 2 == 0:
                     for col_idx in range(1, n_arca_cols + 1):
                         ws_arca.cell(row=row_idx, column=col_idx).fill = zebra_fill
@@ -1480,14 +1483,14 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                         f"SISTEMA!${sys_aux_letter}$7:${sys_total_letter}${sys_last_data_row},"
                         f'{sys_total_offset},FALSE),"NO ENCONTRADO")'
                     )
-                    ws_arca.cell(row=row_idx, column=arca_cruce_col_idx).number_format = money_fmt
+                    ws_arca.cell(row=row_idx, column=arca_cruce_col_idx).number_format = accounting_fmt
                     ws_arca.cell(row=row_idx, column=arca_cruce_col_idx).alignment = center_align
 
                     ws_arca.cell(row=row_idx, column=arca_diff_col_idx).value = (
                         f'=IF({arca_cruce_letter}{row_idx}="NO ENCONTRADO","",'
                         f'{arca_total_letter}{row_idx}-{arca_cruce_letter}{row_idx})'
                     )
-                    ws_arca.cell(row=row_idx, column=arca_diff_col_idx).number_format = money_fmt
+                    ws_arca.cell(row=row_idx, column=arca_diff_col_idx).number_format = accounting_fmt
                     ws_arca.cell(row=row_idx, column=arca_diff_col_idx).alignment = center_align
 
             _autofit(ws_arca, n_arca_cols + 2)
@@ -1507,6 +1510,8 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                 # DE MAS EN SISTEMA: filas del SISTEMA no encontradas en ARCA
                 mask_extra_sistema = ~sistema_aux_values.isin(arca_aux_set)
                 df_extra_sistema = df[mask_extra_sistema].copy()
+                if 'Auxiliar' in df_extra_sistema.columns:
+                    df_extra_sistema = df_extra_sistema.drop(columns=['Auxiliar'])
                 if not df_extra_sistema.empty:
                     df_extra_sistema.to_excel(writer, sheet_name='DE MAS EN SISTEMA', index=False, startrow=5)
                     ws_extra = writer.sheets['DE MAS EN SISTEMA']
@@ -1524,11 +1529,22 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                         c = ws_extra.cell(row=6, column=ci)
                         c.font = header_font; c.fill = header_fill
                         c.alignment = header_align; c.border = thin_border
+                    # Aplicar formato contabilidad Peso a columnas numéricas
+                    extra_col_list = list(df_extra_sistema.columns)
+                    extra_non_money = {'Fecha', 'Tipo', 'PV', 'Nro.', 'Letra', 'Proveedor', 'Cond. IVA', 'CUIT', 'Concepto', 'Jur.'}
+                    for row_idx in range(7, len(df_extra_sistema) + 7):
+                        for ci, cn in enumerate(extra_col_list):
+                            cell = ws_extra.cell(row=row_idx, column=ci + 1)
+                            cell.alignment = center_align
+                            if cn not in extra_non_money:
+                                cell.number_format = accounting_fmt
                     _autofit(ws_extra, n_extra_cols)
 
                 # FALTANTES ARCA: filas de ARCA no encontradas en SISTEMA
                 mask_falt_arca = ~df_arca['Auxiliar'].astype(str).isin(sistema_aux_set)
                 df_falt_arca = df_arca[mask_falt_arca].copy()
+                if 'Auxiliar' in df_falt_arca.columns:
+                    df_falt_arca = df_falt_arca.drop(columns=['Auxiliar'])
                 if not df_falt_arca.empty:
                     df_falt_arca.to_excel(writer, sheet_name='FALTANTES ARCA', index=False, startrow=5)
                     ws_falt = writer.sheets['FALTANTES ARCA']
@@ -1546,6 +1562,15 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                         c = ws_falt.cell(row=6, column=ci)
                         c.font = header_font; c.fill = header_fill
                         c.alignment = header_align; c.border = thin_border
+                    # Aplicar formato contabilidad Peso a columnas numéricas
+                    falt_col_list = list(df_falt_arca.columns)
+                    falt_non_money = {'Fecha', 'Comprobante', 'PV', 'Nro.', 'Tipo Doc.', 'CUIT', 'Razon Social'}
+                    for row_idx in range(7, len(df_falt_arca) + 7):
+                        for ci, cn in enumerate(falt_col_list):
+                            cell = ws_falt.cell(row=row_idx, column=ci + 1)
+                            cell.alignment = center_align
+                            if cn not in falt_non_money:
+                                cell.number_format = accounting_fmt
                     _autofit(ws_falt, n_falt_cols)
 
     print(f"\n  Excel guardado en: {output_path}")
