@@ -1177,26 +1177,46 @@ else:
                                     movimientos.append(movimiento.copy())
                                     movimiento = {}
 
-                            if "VENTAS" in linea or "QR" in linea or "AJUSTE" in linea:
+                            if "VENTAS" in linea or "QR" in linea or "AJUSTE" in linea or "ACREDITACIONES PAGO QRD" in linea:
                                 capturar = True
 
                             if capturar:
                                 partes = linea.split("$")
                                 if len(partes) > 1:
                                     valor = partes[1].strip().replace("Fecha", "").replace("-", "").replace(".", "").replace(",", ".")
+                                    concepto = partes[0].strip()
                                     if "/" not in valor:
                                         try:
-                                            valor = round(float(valor), 2) * (-1 if "-" in partes[1] else 1)
-                                            partes[1] = valor
+                                            num_val = round(float(valor), 2) * (-1 if "-" in partes[1] else 1)
+                                            if "ACREDITACIONES PAGO QRD" in concepto:
+                                                num_val = -abs(num_val)
+                                            
+                                            # Sumar si el concepto ya existe en el movimiento
+                                            if concepto in movimiento and isinstance(movimiento[concepto], (int, float)):
+                                                movimiento[concepto] += num_val
+                                            else:
+                                                movimiento[concepto] = num_val
                                         except ValueError:
                                             continue
-                                    movimiento[partes[0]] = partes[1]
+                                    else:
+                                        movimiento[concepto] = partes[1]
 
                     if not movimientos:
                         st.error("No se encontraron liquidaciones en el PDF. Verificá el formato del archivo.")
                     else:
                         with st.spinner("Generando Excel..."):
                             df_total = pd.DataFrame(movimientos).fillna(0)
+                            
+                            # Integrar ACREDITACIONES PAGO QRD a QR RETENCION IIBB
+                            col_acred = next((c for c in df_total.columns if "ACREDITACIONES PAGO QRD" in c), None)
+                            col_qr_ret = next((c for c in df_total.columns if "QR" in c and "RETENCION" in c and "IIBB" in c), None)
+                            
+                            if col_acred:
+                                if col_qr_ret:
+                                    df_total[col_qr_ret] += df_total[col_acred]
+                                else:
+                                    df_total["QR RETENCION IIBB"] = df_total[col_acred]
+
                             columnas_qr = [col for col in df_total.columns if col.startswith("QR")]
                             df_qr = df_total[df_total[columnas_qr].sum(axis=1) != 0][["Fecha", "Liquidacion"] + columnas_qr] if columnas_qr else None
                             columnas_ajuste = [col for col in df_total.columns if "AJUSTE" in col]
@@ -1327,12 +1347,16 @@ else:
                                     )
                                     ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
 
-                                # ─── CARGO TERMINAL highlight (siempre) ───────────────────
+                                # ─── CARGO TERMINAL y ACREDITACIONES highlight (siempre) ───────────────────
                                 cols_hoja = list(df_hoja.columns)
                                 cargo_terminal_cols = []
+                                acreditaciones_cols = []
                                 for i, col in enumerate(cols_hoja):
                                     if "CARGO TERMINAL" in col.upper():
                                         cargo_terminal_cols.append((i + 1, get_column_letter(i + 1)))
+                                    if "ACREDITACIONES PAGO QRD" in col.upper():
+                                        acreditaciones_cols.append((i + 1, get_column_letter(i + 1)))
+
                                 yellow_fill = PatternFill('solid', fgColor='FFD600')
                                 for col_idx_ct, col_letter_ct in cargo_terminal_cols:
                                     hdr_cell = ws.cell(row=data_header_row, column=col_idx_ct)
@@ -1342,6 +1366,13 @@ else:
                                     hdr_cell.comment = Comment("ATENCION: Cargo terminal detectado", "Sistema")
                                     for row_idx in range(data_start_row, total_row + 1):
                                         ws.cell(row=row_idx, column=col_idx_ct).fill = yellow_fill
+
+                                for col_idx_ac, col_letter_ac in acreditaciones_cols:
+                                    hdr_cell = ws.cell(row=data_header_row, column=col_idx_ac)
+                                    hdr_cell.fill = yellow_fill
+                                    hdr_cell.font = Font(bold=True, size=11, color='000000')
+                                    for row_idx in range(data_start_row, total_row + 1):
+                                        ws.cell(row=row_idx, column=col_idx_ac).fill = yellow_fill
 
                                 # ─── Tabla resumen de impuestos (solo Liquidaciones) ──────
                                 if mostrar_resumen:
