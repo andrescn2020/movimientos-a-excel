@@ -374,10 +374,11 @@ TOOL_MOVIMIENTOS = "Extracción de Movimientos (.txt)"
 TOOL_PORTAL_IVA = "Movimientos Portal IVA limpio (.zip)"
 TOOL_SIFERE = "Archivos SIFERE (.txt)"
 TOOL_LIQUIDACIONES = "Liquidaciones Tarjeta (.pdf)"
+TOOL_DEDUCCIONES = "Limpieza Excel Deducciones IVA/Ganancias"
 
 herramienta = st.selectbox(
     "Seleccioná la herramienta:",
-    options=[TOOL_MOVIMIENTOS, TOOL_PORTAL_IVA, TOOL_SIFERE, TOOL_LIQUIDACIONES],
+    options=[TOOL_MOVIMIENTOS, TOOL_PORTAL_IVA, TOOL_SIFERE, TOOL_LIQUIDACIONES, TOOL_DEDUCCIONES],
     index=0,
 )
 
@@ -1078,7 +1079,7 @@ elif herramienta == TOOL_SIFERE:
         """, unsafe_allow_html=True)
 
 
-else:
+elif herramienta == TOOL_LIQUIDACIONES:
     # ───────────────────────────────────────────────────────────────────────────────
     # HERRAMIENTA: Liquidaciones Tarjeta (PDF)
     # ───────────────────────────────────────────────────────────────────────────────
@@ -1567,3 +1568,247 @@ else:
         </div>
         """, unsafe_allow_html=True)
 
+
+elif herramienta == TOOL_DEDUCCIONES:
+    # ───────────────────────────────────────────────────────────────────────────────
+    # HERRAMIENTA: Limpieza Excel Deducciones IVA/Ganancias
+    # ───────────────────────────────────────────────────────────────────────────────
+    st.markdown('<div class="card"><div class="card-label">01 · Archivo de Deducciones (.xls / .xlsx)</div>', unsafe_allow_html=True)
+    uploaded_ded = st.file_uploader(
+        "Subí el Excel descargado de Mis Retenciones/Percepciones de ARCA",
+        type=["xls", "xlsx"],
+        label_visibility="visible",
+        key="deducciones_xls"
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if uploaded_ded:
+        st.success(f"**{uploaded_ded.name}** listo para procesar")
+        st.markdown('<div class="card"><div class="card-label">02 · Procesar</div>', unsafe_allow_html=True)
+
+        if st.button("⬡  Limpiar y Estilizar"):
+            try:
+                with st.spinner("Procesando Excel de deducciones..."):
+                    # Leer el archivo
+                    df_ded = pd.read_excel(io.BytesIO(uploaded_ded.getvalue()))
+
+                    if df_ded.empty:
+                        st.error("El archivo está vacío.")
+                        st.stop()
+
+                    # ── Detectar tipo de impuesto ──
+                    desc_imp_col = None
+                    for c in df_ded.columns:
+                        if 'descripci' in c.lower() and 'impuesto' in c.lower():
+                            desc_imp_col = c
+                            break
+                    tipo_deduccion = 'DEDUCCIONES'
+                    if desc_imp_col and not df_ded[desc_imp_col].dropna().empty:
+                        primer_imp = str(df_ded[desc_imp_col].dropna().iloc[0]).upper()
+                        if 'GANANCIA' in primer_imp:
+                            tipo_deduccion = 'DEDUCCIONES GANANCIAS'
+                        elif 'VALOR AGRE' in primer_imp or 'IVA' in primer_imp:
+                            tipo_deduccion = 'DEDUCCIONES IVA'
+                        elif 'SIRE' in primer_imp:
+                            tipo_deduccion = 'SIRE IVA'
+
+                    # ── Eliminar columnas vacías y redundantes ──
+                    cols_drop = []
+                    for c in df_ded.columns:
+                        cl = c.lower()
+                        if 'denominaci' in cl and 'raz' in cl:
+                            cols_drop.append(c)
+                        elif c.strip() == 'Impuesto' or c.strip() == 'Régimen':
+                            cols_drop.append(c)
+                    df_ded = df_ded.drop(columns=[c for c in cols_drop if c in df_ded.columns], errors='ignore')
+
+                    # ── Renombrar columnas ──
+                    RENAME_DED = {
+                        'CUIT Agente Ret./Perc.': 'CUIT',
+                        'Descripción Impuesto': 'Impuesto',
+                        'Descripción Régimen': 'Régimen',
+                        'Fecha Ret./Perc.': 'Fecha',
+                        'Número Certificado': 'Nro. Certificado',
+                        'Descripción Operación': 'Operación',
+                        'Importe Ret./Perc.': 'Importe',
+                        'Número Comprobante': 'Nro. Comprobante',
+                        'Fecha Comprobante': 'Fecha Comp.',
+                        'Descripción Comprobante': 'Comprobante',
+                        'Fecha Registración DJ Ag.Ret.': 'Fecha Reg. DJ',
+                    }
+                    df_ded = df_ded.rename(columns=RENAME_DED)
+
+                    # ── Formatear CUIT como XX-XXXXXXXX-X ──
+                    if 'CUIT' in df_ded.columns:
+                        def format_cuit(val):
+                            s = str(int(val)) if not pd.isna(val) else ''
+                            if len(s) == 11:
+                                return f"{s[:2]}-{s[2:10]}-{s[10]}"
+                            return s
+                        df_ded['CUIT'] = df_ded['CUIT'].apply(format_cuit)
+
+                    # ── Ordenar por Fecha ascendente ──
+                    if 'Fecha' in df_ded.columns:
+                        try:
+                            df_ded['_fecha_sort'] = pd.to_datetime(df_ded['Fecha'], format='%d/%m/%Y', errors='coerce')
+                            df_ded = df_ded.sort_values('_fecha_sort', ascending=True).drop(columns=['_fecha_sort'])
+                        except Exception:
+                            pass
+
+                    # ── Separar Retenciones y Percepciones ──
+                    op_col = 'Operación'
+                    df_ret = df_ded[df_ded[op_col].str.upper().str.contains('RETENCION', na=False)] if op_col in df_ded.columns else pd.DataFrame()
+                    df_per = df_ded[df_ded[op_col].str.upper().str.contains('PERCEPCION', na=False)] if op_col in df_ded.columns else pd.DataFrame()
+                    # Si no hay columna Operación, todo va a una hoja genérica
+                    if op_col not in df_ded.columns:
+                        df_ret = df_ded
+                        df_per = pd.DataFrame()
+
+                    # Eliminar columnas Impuesto y Operación (ya discriminadas por hoja)
+                    for df_part in [df_ret, df_per]:
+                        for drop_c in ['Impuesto', 'Operación']:
+                            if drop_c in df_part.columns:
+                                df_part.drop(columns=[drop_c], inplace=True)
+
+                    # Mover Importe al final
+                    for df_part in [df_ret, df_per]:
+                        if 'Importe' in df_part.columns:
+                            imp_data = df_part.pop('Importe')
+                            df_part['Importe'] = imp_data
+
+                    # ── Estilos dorados/ámbar ──
+                    title_font = Font(bold=True, size=14, color='FFFFFF')
+                    title_fill = PatternFill('solid', fgColor='BF8F00')
+                    header_font = Font(bold=True, size=10, color='FFFFFF')
+                    header_fill = PatternFill('solid', fgColor='D4A017')
+                    header_align = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                    center_align = Alignment(horizontal='center', vertical='center')
+                    thin_border = Border(
+                        left=Side(style='thin'), right=Side(style='thin'),
+                        top=Side(style='thin'), bottom=Side(style='thin')
+                    )
+                    zebra_fill = PatternFill('solid', fgColor='FFF2CC')
+                    accounting_fmt = '_-"$"* #,##0.00_-;-"$"* #,##0.00_-;_-"$"* "-"??_-;_-@_-'
+
+                    def _style_ded_sheet(ws, df_sheet, sheet_title, n_r, n_c, col_list):
+                        """Aplica estilos dorados a una hoja de deducciones."""
+                        # Fila 1: Título
+                        ws.merge_cells(f'A1:{get_column_letter(n_c)}1')
+                        ws['A1'] = sheet_title
+                        ws['A1'].font = title_font
+                        ws['A1'].fill = title_fill
+                        ws['A1'].alignment = center_align
+
+                        # Fila 2: Subtítulo con tipo y cantidad
+                        ws.merge_cells(f'A2:{get_column_letter(n_c)}2')
+                        ws['A2'] = f'{tipo_deduccion} — {n_r} registros'
+                        ws['A2'].font = Font(italic=True, size=10, color='BF8F00')
+                        ws['A2'].alignment = center_align
+
+                        # Encabezados (fila 6)
+                        for ci in range(1, n_c + 1):
+                            cell = ws.cell(row=6, column=ci)
+                            cell.font = header_font
+                            cell.fill = header_fill
+                            cell.alignment = header_align
+                            cell.border = thin_border
+
+                        # Columna Importe
+                        imp_idx = col_list.index('Importe') + 1 if 'Importe' in col_list else None
+
+                        # Datos (fila 7+)
+                        for ri in range(7, n_r + 7):
+                            for ci in range(1, n_c + 1):
+                                cell = ws.cell(row=ri, column=ci)
+                                cell.alignment = center_align
+                                cell.border = thin_border
+                                if ci == imp_idx:
+                                    cell.number_format = accounting_fmt
+                            if (ri - 7) % 2 == 0:
+                                for ci in range(1, n_c + 1):
+                                    ws.cell(row=ri, column=ci).fill = zebra_fill
+
+                        # Fila TOTAL
+                        if imp_idx:
+                            tr = n_r + 7
+                            ws.merge_cells(f'A{tr}:{get_column_letter(imp_idx - 1)}{tr}')
+                            ws[f'A{tr}'] = 'TOTAL'
+                            ws[f'A{tr}'].font = Font(bold=True)
+                            ws[f'A{tr}'].alignment = Alignment(horizontal='right')
+                            il = get_column_letter(imp_idx)
+                            tc = ws.cell(row=tr, column=imp_idx)
+                            tc.value = f'=SUM({il}7:{il}{tr - 1})'
+                            tc.font = Font(bold=True)
+                            tc.border = Border(top=Side(style='double'))
+                            tc.number_format = accounting_fmt
+                            tc.alignment = center_align
+
+                        # Autofit
+                        for ci in range(1, n_c + 1):
+                            cl = get_column_letter(ci)
+                            mx = len(str(ws.cell(row=6, column=ci).value or ''))
+                            for ri in range(7, min(n_r + 7, 57)):
+                                v = ws.cell(row=ri, column=ci).value
+                                if v:
+                                    mx = max(mx, len(str(v)))
+                            ws.column_dimensions[cl].width = min(mx + 3, 45)
+
+                    # ── Generar Excel ──
+                    output = io.BytesIO()
+                    sheets_written = []
+
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        if not df_ret.empty:
+                            df_ret.to_excel(writer, sheet_name='Retenciones', index=False, startrow=5)
+                            ws_ret = writer.sheets['Retenciones']
+                            ret_cols = list(df_ret.columns)
+                            _style_ded_sheet(ws_ret, df_ret, 'RETENCIONES', len(df_ret), len(ret_cols), ret_cols)
+                            sheets_written.append(('Retenciones', len(df_ret)))
+
+                        if not df_per.empty:
+                            df_per.to_excel(writer, sheet_name='Percepciones', index=False, startrow=5)
+                            ws_per = writer.sheets['Percepciones']
+                            per_cols = list(df_per.columns)
+                            _style_ded_sheet(ws_per, df_per, 'PERCEPCIONES', len(df_per), len(per_cols), per_cols)
+                            sheets_written.append(('Percepciones', len(df_per)))
+
+                    output.seek(0)
+                    n_rows = len(df_ded)
+
+                st.success("✓  Proceso completado con éxito")
+
+                # Stats
+                stats_html = f'<div class="stats-row"><div class="stat-chip"><span class="stat-val">{n_rows}</span><span class="stat-lbl">Total</span></div>'
+                for sname, scount in sheets_written:
+                    stats_html += f'<div class="stat-chip"><span class="stat-val">{scount}</span><span class="stat-lbl">{sname}</span></div>'
+                stats_html += '</div>'
+                st.markdown(stats_html, unsafe_allow_html=True)
+
+                ded_filename = f"{Path(uploaded_ded.name).stem}_limpio.xlsx"
+                st.download_button(
+                    label="↓  Descargar Excel Limpio",
+                    data=output,
+                    file_name=ded_filename,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
+
+            except Exception as e:
+                st.error(f"Error al procesar el archivo: {str(e)}")
+                st.exception(e)
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    else:
+        st.markdown("""
+        <div style="
+            text-align: center;
+            padding: 2rem 1rem;
+            font-family: 'Space Mono', monospace;
+            font-size: 0.72rem;
+            color: #6b7280;
+            letter-spacing: 0.12em;
+        ">
+            ESPERANDO ARCHIVO EXCEL · PASO 01
+        </div>
+        """, unsafe_allow_html=True)

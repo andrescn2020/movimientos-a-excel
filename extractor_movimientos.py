@@ -1517,14 +1517,20 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                     ws_extra = writer.sheets['DE MAS EN SISTEMA']
                     n_extra_cols = len(df_extra_sistema.columns)
                     ws_extra.merge_cells(f'A1:{get_column_letter(n_extra_cols)}1')
-                    ws_extra['A1'] = 'DE MAS EN SISTEMA'
-                    ws_extra['A1'].font = Font(bold=True, size=14, color='FFFFFF')
-                    ws_extra['A1'].fill = PatternFill('solid', fgColor='C00000')
-                    ws_extra['A1'].alignment = center_align
+                    ws_extra['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+                    ws_extra['A1'].font = title_font; ws_extra['A1'].fill = title_fill; ws_extra['A1'].alignment = center_align
                     ws_extra.merge_cells(f'A2:{get_column_letter(n_extra_cols)}2')
-                    ws_extra['A2'] = f'{len(df_extra_sistema)} comprobantes en SISTEMA no encontrados en ARCA'
-                    ws_extra['A2'].font = Font(bold=True, size=11, color='C00000')
+                    ws_extra['A2'] = 'DE MAS EN SISTEMA'
+                    ws_extra['A2'].font = Font(bold=True, size=14, color='FFFFFF')
+                    ws_extra['A2'].fill = PatternFill('solid', fgColor='C00000')
                     ws_extra['A2'].alignment = center_align
+                    ws_extra.merge_cells(f'A3:{get_column_letter(n_extra_cols)}3')
+                    ws_extra['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+                    ws_extra['A3'].font = Font(bold=True, size=11, color='2F5496'); ws_extra['A3'].alignment = center_align
+                    ws_extra.merge_cells(f'A4:{get_column_letter(n_extra_cols)}4')
+                    ws_extra['A4'] = f'{len(df_extra_sistema)} comprobantes en SISTEMA no encontrados en ARCA'
+                    ws_extra['A4'].font = Font(italic=True, size=10, color='C00000')
+                    ws_extra['A4'].alignment = center_align
                     for ci in range(1, n_extra_cols + 1):
                         c = ws_extra.cell(row=6, column=ci)
                         c.font = header_font; c.fill = header_fill
@@ -1532,12 +1538,38 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                     # Aplicar formato contabilidad Peso a columnas numéricas
                     extra_col_list = list(df_extra_sistema.columns)
                     extra_non_money = {'Fecha', 'Tipo', 'PV', 'Nro.', 'Letra', 'Proveedor', 'Cond. IVA', 'CUIT', 'Concepto', 'Jur.'}
+                    # Calcular rango de SUM para la columna Total (misma lógica que Movimientos)
+                    extra_total_col_idx = extra_col_list.index('Total') + 1 if 'Total' in extra_col_list else None
+                    extra_first_sum = None
+                    extra_last_sum = None
+                    if extra_total_col_idx:
+                        # Buscar primera columna IVA presente
+                        for iva_c in IVA_COL_ORDER:
+                            if iva_c in extra_col_list:
+                                extra_first_sum = get_column_letter(extra_col_list.index(iva_c) + 1)
+                                break
+                        # Buscar última columna antes de Total (other_cols o última IVA)
+                        if other_cols:
+                            for oc in reversed(other_cols):
+                                if oc in extra_col_list:
+                                    extra_last_sum = get_column_letter(extra_col_list.index(oc) + 1)
+                                    break
+                        if not extra_last_sum:
+                            for iva_c in reversed(IVA_COL_ORDER):
+                                if iva_c in extra_col_list:
+                                    extra_last_sum = get_column_letter(extra_col_list.index(iva_c) + 1)
+                                    break
                     for row_idx in range(7, len(df_extra_sistema) + 7):
                         for ci, cn in enumerate(extra_col_list):
                             cell = ws_extra.cell(row=row_idx, column=ci + 1)
                             cell.alignment = center_align
                             if cn not in extra_non_money:
                                 cell.number_format = accounting_fmt
+                        # Formula SUM en columna Total
+                        if extra_total_col_idx and extra_first_sum and extra_last_sum:
+                            ws_extra.cell(row=row_idx, column=extra_total_col_idx).value = f'=SUM({extra_first_sum}{row_idx}:{extra_last_sum}{row_idx})'
+                            ws_extra.cell(row=row_idx, column=extra_total_col_idx).number_format = accounting_fmt
+
                     _autofit(ws_extra, n_extra_cols)
 
                 # FALTANTES ARCA: filas de ARCA no encontradas en SISTEMA
@@ -1550,14 +1582,20 @@ def crear_excel(transacciones: list[dict], meta: dict, output_path, con_resumene
                     ws_falt = writer.sheets['FALTANTES ARCA']
                     n_falt_cols = len(df_falt_arca.columns)
                     ws_falt.merge_cells(f'A1:{get_column_letter(n_falt_cols)}1')
-                    ws_falt['A1'] = 'FALTANTES ARCA'
-                    ws_falt['A1'].font = Font(bold=True, size=14, color='FFFFFF')
-                    ws_falt['A1'].fill = PatternFill('solid', fgColor='C00000')
-                    ws_falt['A1'].alignment = center_align
+                    ws_falt['A1'] = meta['razon_social'].upper() if meta['razon_social'] else 'CONTRIBUYENTE'
+                    ws_falt['A1'].font = title_font; ws_falt['A1'].fill = title_fill; ws_falt['A1'].alignment = center_align
                     ws_falt.merge_cells(f'A2:{get_column_letter(n_falt_cols)}2')
-                    ws_falt['A2'] = f'{len(df_falt_arca)} comprobantes en ARCA no encontrados en SISTEMA'
-                    ws_falt['A2'].font = Font(bold=True, size=11, color='C00000')
+                    ws_falt['A2'] = f"Compras Faltantes ({meta['periodo']})"
+                    ws_falt['A2'].font = Font(bold=True, size=14, color='FFFFFF')
+                    ws_falt['A2'].fill = PatternFill('solid', fgColor='C00000')
                     ws_falt['A2'].alignment = center_align
+                    ws_falt.merge_cells(f'A3:{get_column_letter(n_falt_cols)}3')
+                    ws_falt['A3'] = f"CUIT: {meta['cuit_empresa']} | Periodo: {meta['periodo']}"
+                    ws_falt['A3'].font = Font(bold=True, size=11, color='2F5496'); ws_falt['A3'].alignment = center_align
+                    ws_falt.merge_cells(f'A4:{get_column_letter(n_falt_cols)}4')
+                    ws_falt['A4'] = f'{len(df_falt_arca)} comprobantes en ARCA no encontrados en SISTEMA'
+                    ws_falt['A4'].font = Font(italic=True, size=10, color='C00000')
+                    ws_falt['A4'].alignment = center_align
                     for ci in range(1, n_falt_cols + 1):
                         c = ws_falt.cell(row=6, column=ci)
                         c.font = header_font; c.fill = header_fill
